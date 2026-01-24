@@ -34,6 +34,9 @@ def main() -> None:
     # Регистрируем обработчик текстовых сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages.handle_message))
     
+    # Регистрируем обработчик фото (для сканирования QR-кодов)
+    application.add_handler(MessageHandler(filters.PHOTO, messages.handle_photo))
+    
     # Регистрируем обработчик callback для сессий
     application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^session_"))
     
@@ -48,6 +51,9 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^manager_"))
     application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^admin_select_session_report_"))
     application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^admin_remove_manager_"))
+    
+    # Регистрируем обработчик для получения QR-кода
+    application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^get_qr_"))
 
     # Запускаем бота
     logger.info("Бот запущен...")

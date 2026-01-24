@@ -192,8 +192,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         
         if session:
             cart = database.get_user_cart(user_id, session_id)
-            from keyboards.products import get_products_keyboard
-            products_keyboard = get_products_keyboard(session_id)
+            from keyboards.cart import get_cart_orders_keyboard
             
             if cart:
                 cart_text = "\n".join([
@@ -203,11 +202,15 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                     f"Статус: {order['status']}\n"
                     for order in cart
                 ])
+                cart_keyboard = get_cart_orders_keyboard(session_id, cart)
                 await query.edit_message_text(
-                    f"🛒 Корзина - {session['session_name']}\n\n{cart_text}",
-                    reply_markup=products_keyboard
+                    f"🛒 Корзина - {session['session_name']}\n\n{cart_text}\n\n"
+                    f"Нажмите на заказ, чтобы получить QR-код:",
+                    reply_markup=cart_keyboard
                 )
             else:
+                from keyboards.products import get_products_keyboard
+                products_keyboard = get_products_keyboard(session_id)
                 await query.edit_message_text(
                     f"🛒 Корзина - {session['session_name']}\n\n"
                     f"Ваша корзина пуста.",
@@ -215,6 +218,45 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 )
         else:
             await query.answer("❌ Сессия не найдена!", show_alert=True)
+        return
+    
+    elif callback_data.startswith("get_qr_"):
+        # Генерация и отправка QR-кода заказа
+        order_number = callback_data.split("_")[-1]
+        order = database.find_order_by_number(order_number)
+        
+        if order:
+            import qr_code
+            qr_image = qr_code.generate_qr_code(order_number)
+            
+            order_items = database.get_order_items(order['order_id'])
+            session = database.get_session(order['session_id'])
+            
+            items_text = "\n".join([
+                f"• {item['product_name']} x{item['quantity']} = {item['quantity'] * item['price']}₽"
+                for item in order_items
+            ])
+            
+            await query.message.reply_photo(
+                photo=qr_image,
+                caption=(
+                    f"📱 QR-код заказа #{order_number}\n\n"
+                    f"📦 Сессия: {session['session_name'] if session else 'Не найдена'}\n"
+                    f"👤 ФИО: {order['full_name']}\n"
+                    f"📱 Телефон: {order['phone_number']}\n"
+                    f"📊 Статус: {database.get_order_status_ru(order['status'])}\n\n"
+                    f"Товары:\n{items_text}\n\n"
+                    f"💰 Общая сумма: {order['total_amount']}₽"
+                )
+            )
+            await query.answer("QR-код отправлен!")
+        else:
+            await query.answer("❌ Заказ не найден!", show_alert=True)
+        return
+    
+    elif callback_data == "cart_back":
+        # Возврат к корзине (обрабатывается через cart_)
+        await query.answer()
         return
     
     # Проверяем права администратора для админских действий

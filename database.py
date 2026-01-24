@@ -554,12 +554,15 @@ def is_session_trading_active(session_id: int) -> bool:
 
 
 def get_user_session_boxes_purchased(user_id: int, session_id: int) -> int:
-    """Получает количество купленных ящиков пользователем в сессии"""
+    """Получает количество купленных ящиков пользователем в сессии (только выданные заказы)"""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+    # Считаем только заказы со статусом 'completed'
     cursor.execute("""
-        SELECT boxes_purchased FROM user_session_limits 
-        WHERE user_id = ? AND session_id = ?
+        SELECT COALESCE(SUM(oi.quantity), 0)
+        FROM orders o
+        JOIN order_items oi ON o.order_id = oi.order_id
+        WHERE o.user_id = ? AND o.session_id = ? AND o.status = 'completed'
     """, (user_id, session_id))
     row = cursor.fetchone()
     conn.close()
@@ -636,14 +639,7 @@ def create_order(user_id: int, session_id: int, phone_number: str, full_name: st
                 WHERE product_id = ?
             """, (item['quantity'], item['product_id']))
         
-        # Обновляем количество купленных ящиков пользователем в сессии
-        total_boxes = sum(item['quantity'] for item in items)
-        cursor.execute("""
-            INSERT INTO user_session_limits (user_id, session_id, boxes_purchased)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id, session_id) 
-            DO UPDATE SET boxes_purchased = boxes_purchased + ?
-        """, (user_id, session_id, total_boxes, total_boxes))
+        # НЕ обновляем лимит при создании заказа - лимит будет обновлен только при выдаче заказа (статус completed)
         
         conn.commit()
         conn.close()
@@ -743,16 +739,64 @@ def find_order_by_number(order_number: str) -> Optional[dict]:
 
 
 def update_order_status(order_id: int, status: str) -> bool:
-    """Обновляет статус заказа"""
+    """Обновляет статус заказа и обновляет лимит пользователя при выдаче заказа"""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     try:
+        # Получаем текущий статус заказа
+        cursor.execute("SELECT status, user_id, session_id FROM orders WHERE order_id = ?", (order_id,))
+        order_data = cursor.fetchone()
+        
+        if not order_data:
+            conn.close()
+            return False
+        
+        old_status = order_data[0]
+        user_id = order_data[1]
+        session_id = order_data[2]
+        
+        # Обновляем статус заказа
         cursor.execute("UPDATE orders SET status = ? WHERE order_id = ?", (status, order_id))
+        
+        # Если статус меняется на 'completed', уменьшаем лимит пользователя
+        if status == 'completed' and old_status != 'completed':
+            # Получаем количество ящиков в заказе
+            cursor.execute("""
+                SELECT SUM(quantity) FROM order_items WHERE order_id = ?
+            """, (order_id,))
+            total_boxes = cursor.fetchone()[0] or 0
+            
+            if total_boxes > 0:
+                # Увеличиваем количество купленных ящиков
+                cursor.execute("""
+                    INSERT INTO user_session_limits (user_id, session_id, boxes_purchased)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(user_id, session_id) 
+                    DO UPDATE SET boxes_purchased = boxes_purchased + ?
+                """, (user_id, session_id, total_boxes, total_boxes))
+        
+        # Если статус меняется с 'completed' на другой, возвращаем лимит обратно
+        elif old_status == 'completed' and status != 'completed':
+            # Получаем количество ящиков в заказе
+            cursor.execute("""
+                SELECT SUM(quantity) FROM order_items WHERE order_id = ?
+            """, (order_id,))
+            total_boxes = cursor.fetchone()[0] or 0
+            
+            if total_boxes > 0:
+                # Уменьшаем количество купленных ящиков
+                cursor.execute("""
+                    UPDATE user_session_limits 
+                    SET boxes_purchased = boxes_purchased - ?
+                    WHERE user_id = ? AND session_id = ?
+                """, (total_boxes, user_id, session_id))
+        
         conn.commit()
         conn.close()
         return True
     except Exception as e:
         logger.error(f"Ошибка при обновлении статуса заказа: {e}")
+        conn.rollback()
         conn.close()
         return False
 

@@ -1,6 +1,7 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 import database
+import io
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -186,14 +187,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         from keyboards.orders import get_back_to_products_keyboard
                         back_keyboard = get_back_to_products_keyboard(purchase_data['session_id'])
                     
-                    await update.message.reply_text(
-                        f"✅ Заказ успешно создан!\n\n"
-                        f"📋 Номер заказа: #{order['order_number']}\n"
-                        f"📦 Сессия: {session['session_name']}\n"
-                        f"👤 ФИО: {order['full_name']}\n"
-                        f"📱 Телефон: {order['phone_number']}\n\n"
-                        f"Товары:\n{items_text}\n\n"
-                        f"💰 Общая сумма: {order['total_amount']}₽{continue_text}",
+                    # Генерируем и отправляем QR-код
+                    import qr_code
+                    qr_image = qr_code.generate_qr_code(order['order_number'])
+                    
+                    await update.message.reply_photo(
+                        photo=qr_image,
+                        caption=(
+                            f"✅ Заказ успешно создан!\n\n"
+                            f"📋 Номер заказа: #{order['order_number']}\n"
+                            f"📦 Сессия: {session['session_name']}\n"
+                            f"👤 ФИО: {order['full_name']}\n"
+                            f"📱 Телефон: {order['phone_number']}\n\n"
+                            f"Товары:\n{items_text}\n\n"
+                            f"💰 Общая сумма: {order['total_amount']}₽{continue_text}"
+                        ),
                         reply_markup=back_keyboard if back_keyboard else products_keyboard
                     )
                     
@@ -312,3 +320,83 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         # Обычное эхо-сообщение
         await update.message.reply_text(f"Вы написали: {update.message.text}")
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик фото для сканирования QR-кодов"""
+    user_id = update.effective_user.id
+    photo = update.message.photo[-1]  # Берем фото наибольшего размера
+    
+    try:
+        # Скачиваем фото
+        file = await context.bot.get_file(photo.file_id)
+        photo_bytes = io.BytesIO()
+        await file.download_to_memory(photo_bytes)
+        photo_bytes.seek(0)
+        
+        # Декодируем QR-код
+        from PIL import Image
+        from pyzbar import pyzbar
+        
+        img = Image.open(photo_bytes)
+        decoded_objects = pyzbar.decode(img)
+        
+        if decoded_objects:
+            # Извлекаем номер заказа из QR-кода
+            order_number = decoded_objects[0].data.decode('utf-8')
+            order = database.find_order_by_number(order_number)
+            
+            if order:
+                order_items = database.get_order_items(order['order_id'])
+                session = database.get_session(order['session_id'])
+                
+                items_text = "\n".join([
+                    f"• {item['product_name']} x{item['quantity']} = {item['quantity'] * item['price']}₽"
+                    for item in order_items
+                ])
+                
+                # Проверяем права пользователя
+                is_admin_or_manager = database.is_admin(user_id) or database.is_manager(user_id)
+                
+                if is_admin_or_manager:
+                    # Для админа и менеджера показываем полную информацию
+                    await update.message.reply_text(
+                        f"📋 Заказ #{order['order_number']}\n\n"
+                        f"📦 Сессия: {session['session_name'] if session else 'Не найдена'}\n"
+                        f"👤 ФИО: {order['full_name']}\n"
+                        f"📱 Телефон: {order['phone_number']}\n"
+                        f"📊 Статус: {database.get_order_status_ru(order['status'])}\n"
+                        f"📅 Дата: {order['created_at']}\n\n"
+                        f"Товары:\n{items_text}\n\n"
+                        f"💰 Общая сумма: {order['total_amount']}₽"
+                    )
+                else:
+                    # Для обычного пользователя показываем с маскировкой
+                    import qr_code
+                    masked_name = qr_code.mask_name(order['full_name'])
+                    masked_phone = qr_code.mask_phone(order['phone_number'])
+                    
+                    await update.message.reply_text(
+                        f"📋 Заказ #{order['order_number']}\n\n"
+                        f"📦 Сессия: {session['session_name'] if session else 'Не найдена'}\n"
+                        f"👤 ФИО: {masked_name}\n"
+                        f"📱 Телефон: {masked_phone}\n"
+                        f"📊 Статус: {database.get_order_status_ru(order['status'])}\n\n"
+                        f"Товары:\n{items_text}\n\n"
+                        f"💰 Общая сумма: {order['total_amount']}₽"
+                    )
+            else:
+                await update.message.reply_text(
+                    f"❌ Заказ с номером {order_number} не найден!"
+                )
+        else:
+            await update.message.reply_text(
+                "❌ QR-код не распознан. Убедитесь, что фото четкое и QR-код хорошо виден."
+            )
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Ошибка при обработке QR-кода: {e}")
+        await update.message.reply_text(
+            "❌ Ошибка при обработке QR-кода. Попробуйте еще раз."
+        )
