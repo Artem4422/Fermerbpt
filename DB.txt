@@ -1,0 +1,111 @@
+БАЗА ДАННЫХ - ОПИСАНИЕ ТАБЛИЦ И ЯЧЕЕК
+=========================================
+
+ТАБЛИЦА: users
+---------------
+Назначение: Хранение информации о пользователях Telegram бота
+
+ЯЧЕЙКИ:
+- user_id (INTEGER PRIMARY KEY) - Уникальный идентификатор пользователя Telegram
+- username (TEXT) - Имя пользователя (@username), может быть NULL
+- first_name (TEXT NOT NULL) - Имя пользователя (обязательное поле)
+- last_name (TEXT) - Фамилия пользователя, может быть NULL
+- language_code (TEXT) - Код языка пользователя (например, 'ru', 'en'), может быть NULL
+- is_bot (INTEGER DEFAULT 0) - Флаг, является ли пользователь ботом (0 - нет, 1 - да)
+- is_premium (INTEGER DEFAULT 0) - Флаг, имеет ли пользователь Telegram Premium (0 - нет, 1 - да)
+- added_to_attachment_menu (INTEGER DEFAULT 0) - Флаг, добавлен ли бот в меню вложений (0 - нет, 1 - да)
+- can_join_groups (INTEGER DEFAULT 1) - Флаг, может ли бот присоединяться к группам (0 - нет, 1 - да)
+- can_read_all_group_messages (INTEGER DEFAULT 0) - Флаг, может ли бот читать все сообщения в группах (0 - нет, 1 - да)
+- supports_inline_queries (INTEGER DEFAULT 0) - Флаг, поддерживает ли пользователь inline-запросы (0 - нет, 1 - да)
+- chat_id (INTEGER) - ID чата с пользователем
+- first_seen (TIMESTAMP DEFAULT CURRENT_TIMESTAMP) - Дата и время первого обращения пользователя к боту
+- last_seen (TIMESTAMP DEFAULT CURRENT_TIMESTAMP) - Дата и время последнего обращения пользователя к боту
+- total_messages (INTEGER DEFAULT 0) - Общее количество сообщений от пользователя
+
+ТАБЛИЦА: admins
+---------------
+Назначение: Хранение списка администраторов бота
+
+ЯЧЕЙКИ:
+- user_id (INTEGER PRIMARY KEY) - Уникальный идентификатор пользователя-администратора (связь с таблицей users)
+- added_at (TIMESTAMP DEFAULT CURRENT_TIMESTAMP) - Дата и время добавления пользователя в администраторы
+
+ТАБЛИЦА: managers
+-----------------
+Назначение: Хранение списка менеджеров бота
+
+ЯЧЕЙКИ:
+- user_id (INTEGER PRIMARY KEY) - Уникальный идентификатор пользователя-менеджера (связь с таблицей users)
+- added_at (TIMESTAMP DEFAULT CURRENT_TIMESTAMP) - Дата и время добавления пользователя в менеджеры
+
+ТАБЛИЦА: sessions
+-----------------
+Назначение: Хранение сессий торговли/продаж
+
+ЯЧЕЙКИ:
+- session_id (INTEGER PRIMARY KEY AUTOINCREMENT) - Уникальный идентификатор сессии
+- session_name (TEXT NOT NULL UNIQUE) - Название сессии (уникальное)
+- is_active (INTEGER DEFAULT 0) - Статус торговли для сессии (0 - торговля остановлена, 1 - торговля активна)
+- created_at (TIMESTAMP DEFAULT CURRENT_TIMESTAMP) - Дата и время создания сессии
+- created_by (INTEGER) - ID администратора, создавшего сессию (связь с таблицей users)
+
+ТАБЛИЦА: products
+------------------
+Назначение: Хранение товаров, привязанных к сессиям
+
+ЯЧЕЙКИ:
+- product_id (INTEGER PRIMARY KEY AUTOINCREMENT) - Уникальный идентификатор товара
+- session_id (INTEGER NOT NULL) - ID сессии, к которой привязан товар (связь с таблицей sessions)
+- product_name (TEXT NOT NULL) - Название товара
+- price (REAL NOT NULL) - Цена товара
+- boxes_count (INTEGER NOT NULL DEFAULT 0) - Количество ящиков товара
+- created_at (TIMESTAMP DEFAULT CURRENT_TIMESTAMP) - Дата и время создания товара
+- created_by (INTEGER) - ID администратора, создавшего товар (связь с таблицей users)
+
+ТАБЛИЦА: settings
+------------------
+Назначение: Хранение настроек бота
+
+ЯЧЕЙКИ:
+- setting_key (TEXT PRIMARY KEY) - Ключ настройки (например, 'limit_per_person')
+- setting_value (TEXT NOT NULL) - Значение настройки
+- updated_at (TIMESTAMP DEFAULT CURRENT_TIMESTAMP) - Дата и время последнего обновления настройки
+
+Используемые ключи:
+- limit_per_person - Лимит ящиков на одного человека (0 означает без ограничений)
+
+ТАБЛИЦА: orders
+----------------
+Назначение: Хранение заказов пользователей
+
+ЯЧЕЙКИ:
+- order_id (INTEGER PRIMARY KEY AUTOINCREMENT) - Уникальный идентификатор заказа
+- order_number (TEXT NOT NULL UNIQUE) - Уникальный номер заказа (8 цифр)
+- user_id (INTEGER NOT NULL) - ID пользователя, сделавшего заказ (связь с таблицей users)
+- session_id (INTEGER NOT NULL) - ID сессии, к которой относится заказ (связь с таблицей sessions)
+- phone_number (TEXT) - Номер телефона покупателя
+- full_name (TEXT) - ФИО покупателя
+- total_amount (REAL NOT NULL DEFAULT 0) - Общая сумма заказа
+- status (TEXT DEFAULT 'pending') - Статус заказа
+- created_at (TIMESTAMP DEFAULT CURRENT_TIMESTAMP) - Дата и время создания заказа
+
+ТАБЛИЦА: order_items
+---------------------
+Назначение: Хранение товаров в заказах
+
+ЯЧЕЙКИ:
+- item_id (INTEGER PRIMARY KEY AUTOINCREMENT) - Уникальный идентификатор позиции заказа
+- order_id (INTEGER NOT NULL) - ID заказа (связь с таблицей orders)
+- product_id (INTEGER NOT NULL) - ID товара (связь с таблицей products)
+- quantity (INTEGER NOT NULL) - Количество ящиков
+- price (REAL NOT NULL) - Цена за ящик на момент покупки
+
+ТАБЛИЦА: user_session_limits
+------------------------------
+Назначение: Хранение количества купленных ящиков пользователем в каждой сессии
+
+ЯЧЕЙКИ:
+- user_id (INTEGER NOT NULL) - ID пользователя (связь с таблицей users)
+- session_id (INTEGER NOT NULL) - ID сессии (связь с таблицей sessions)
+- boxes_purchased (INTEGER DEFAULT 0) - Количество купленных ящиков пользователем в этой сессии
+- PRIMARY KEY (user_id, session_id) - Составной первичный ключ
