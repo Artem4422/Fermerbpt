@@ -4,6 +4,7 @@ import database
 import config
 import sqlite3
 import logging
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -388,7 +389,54 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.answer("❌ Сессия не найдена!", show_alert=True)
     
     elif callback_data == "admin_change_box_volume":
-        await query.edit_message_text("📦 Изменить объем ящика\n\nФункция в разработке...")
+        # Показываем список сессий для выбора
+        from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+        sessions_keyboard = get_sessions_keyboard_for_admin("change_box_volume")
+        await query.edit_message_text(
+            "📦 Изменить объем ящика\n\n"
+            "Выберите сессию:",
+            reply_markup=sessions_keyboard
+        )
+    
+    elif callback_data.startswith("admin_select_session_change_box_volume_"):
+        # Админ выбрал сессию для изменения объема ящика
+        session_id = int(callback_data.split("_")[-1])
+        session = database.get_session(session_id)
+        if session:
+            products = database.get_products_by_session(session_id)
+            if products:
+                from keyboards.products_admin import get_products_keyboard_for_admin
+                products_keyboard = get_products_keyboard_for_admin(session_id, "change_box_volume")
+                await query.edit_message_text(
+                    f"✅ Выбрана сессия: {session['session_name']}\n\n"
+                    f"Выберите товар для изменения количества ящиков:",
+                    reply_markup=products_keyboard
+                )
+            else:
+                await query.edit_message_text(
+                    f"✅ Выбрана сессия: {session['session_name']}\n\n"
+                    f"В этой сессии нет товаров."
+                )
+        else:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
+    
+    elif callback_data.startswith("admin_select_product_change_box_volume_"):
+        # Админ выбрал товар для изменения объема ящика
+        product_id = int(callback_data.split("_")[-1])
+        product = database.get_product(product_id)
+        if product:
+            context.user_data['changing_box_volume'] = {
+                'product_id': product_id,
+                'current_boxes': product['boxes_count']
+            }
+            await query.edit_message_text(
+                f"📦 Изменить количество ящиков\n\n"
+                f"Товар: {product['product_name']}\n"
+                f"Текущее количество ящиков: {product['boxes_count']}\n\n"
+                f"Введите новое количество ящиков:"
+            )
+        else:
+            await query.answer("❌ Товар не найден!", show_alert=True)
     
     elif callback_data == "admin_change_order":
         await query.edit_message_text("📋 Изменить заказ\n\nФункция в разработке...")
@@ -449,10 +497,97 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(f"❌ Ошибка при удалении менеджера!")
     
     elif callback_data == "admin_reports":
-        await query.edit_message_text("📈 Отчеты\n\nФункция в разработке...")
+        # Показываем выбор периода для отчета
+        from keyboards.reports import get_reports_period_keyboard
+        reports_keyboard = get_reports_period_keyboard()
+        await query.edit_message_text(
+            "📈 Отчеты\n\n"
+            "Выберите период для формирования отчета:",
+            reply_markup=reports_keyboard
+        )
+    
+    elif callback_data.startswith("admin_report_"):
+        # Обработка выбора периода отчета
+        period = callback_data.split("_")[-1]  # week, month, year, all_time
+        
+        await query.edit_message_text("⏳ Формирование отчета...")
+        
+        try:
+            import reports
+            excel_file = reports.generate_period_report_excel(period)
+            
+            period_names = {
+                "week": "неделю",
+                "month": "месяц",
+                "year": "год",
+                "all_time": "все время"
+            }
+            period_name = period_names.get(period, period)
+            
+            await query.message.reply_document(
+                document=excel_file,
+                filename=f"Отчет_за_{period_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                caption=f"📊 Отчет за {period_name}"
+            )
+            
+            await query.edit_message_text(f"✅ Отчет за {period_name} успешно сформирован!")
+        except Exception as e:
+            logger.error(f"Ошибка при формировании отчета: {e}")
+            await query.edit_message_text(
+                f"❌ Ошибка при формировании отчета: {str(e)}"
+            )
     
     elif callback_data == "admin_close_session":
-        await query.edit_message_text("✅ Сессия закрыта")
+        # Показываем список всех сессий для закрытия
+        from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+        sessions_keyboard = get_sessions_keyboard_for_admin("close_session")
+        all_sessions = database.get_all_sessions()
+        if all_sessions:
+            await query.edit_message_text(
+                "🗑️ Закрыть сессию\n\n"
+                "Выберите сессию для закрытия (будет сформирован отчет и сессия будет удалена):",
+                reply_markup=sessions_keyboard
+            )
+        else:
+            await query.edit_message_text("❌ Нет сессий для закрытия!")
+    
+    elif callback_data.startswith("admin_select_session_close_session_"):
+        # Закрытие сессии с генерацией отчета
+        session_id = int(callback_data.split("_")[-1])
+        session = database.get_session(session_id)
+        
+        if session:
+            await query.edit_message_text("⏳ Формирование отчета...")
+            
+            try:
+                # Генерируем Excel отчет
+                import reports
+                excel_file = reports.generate_session_report_excel(session_id)
+                
+                # Отправляем отчет
+                await query.message.reply_document(
+                    document=excel_file,
+                    filename=f"Отчет_Сессия_{session['session_name']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    caption=f"📊 Полный отчет по сессии: {session['session_name']}"
+                )
+                
+                # Удаляем сессию
+                if database.delete_session(session_id):
+                    await query.edit_message_text(
+                        f"✅ Сессия '{session['session_name']}' успешно закрыта и удалена!\n\n"
+                        f"Отчет отправлен выше."
+                    )
+                else:
+                    await query.edit_message_text(
+                        f"⚠️ Отчет сформирован, но произошла ошибка при удалении сессии."
+                    )
+            except Exception as e:
+                logger.error(f"Ошибка при закрытии сессии: {e}")
+                await query.edit_message_text(
+                    f"❌ Ошибка при формировании отчета или закрытии сессии: {str(e)}"
+                )
+        else:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
     
     elif callback_data == "admin_back":
         # Возврат к главной админ-панели

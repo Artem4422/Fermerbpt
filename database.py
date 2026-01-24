@@ -336,6 +336,53 @@ def get_all_sessions() -> list:
     return [{"session_id": s[0], "session_name": s[1]} for s in sessions]
 
 
+def get_active_sessions() -> list:
+    """Получает список активных сессий"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT session_id, session_name FROM sessions WHERE is_active = 1 ORDER BY created_at DESC")
+    sessions = cursor.fetchall()
+    conn.close()
+    return [{"session_id": s[0], "session_name": s[1]} for s in sessions]
+
+
+def delete_session(session_id: int) -> bool:
+    """Удаляет сессию и связанные данные"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        # Проверяем, существует ли сессия
+        cursor.execute("SELECT session_id FROM sessions WHERE session_id = ?", (session_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return False
+        
+        # Отключаем проверку foreign key для этой операции
+        cursor.execute("PRAGMA foreign_keys = OFF")
+        
+        # Удаляем связанные записи из user_session_limits
+        cursor.execute("DELETE FROM user_session_limits WHERE session_id = ?", (session_id,))
+        
+        # Удаляем товары сессии
+        cursor.execute("DELETE FROM products WHERE session_id = ?", (session_id,))
+        
+        # Удаляем саму сессию
+        cursor.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        
+        # Включаем обратно проверку foreign key
+        cursor.execute("PRAGMA foreign_keys = ON")
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Сессия {session_id} и связанные данные удалены")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сессии: {e}")
+        conn.rollback()
+        conn.close()
+        return False
+
+
 def get_session(session_id: int) -> Optional[dict]:
     """Получает информацию о сессии"""
     conn = sqlite3.connect(DB_NAME)
@@ -421,6 +468,22 @@ def delete_product(product_id: int) -> bool:
     if success:
         logger.info(f"Товар {product_id} удален")
     return success
+
+
+def update_product_boxes_count(product_id: int, boxes_count: int) -> bool:
+    """Обновляет количество ящиков товара"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE products SET boxes_count = ? WHERE product_id = ?", (boxes_count, product_id))
+        conn.commit()
+        conn.close()
+        logger.info(f"Количество ящиков товара {product_id} обновлено на {boxes_count}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении количества ящиков: {e}")
+        conn.close()
+        return False
 
 
 def set_limit_per_person(limit: int) -> bool:
@@ -722,6 +785,67 @@ def get_session_orders(session_id: int) -> list:
             "status": order[6],
             "created_at": order[7],
             "items": order[8] or "Нет товаров"
+        }
+        for order in orders
+    ]
+
+
+def get_orders_by_period(period: str) -> list:
+    """Получает все заказы за указанный период"""
+    from datetime import datetime, timedelta
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    now = datetime.now()
+    
+    if period == "week":
+        start_date = (now - timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+    elif period == "month":
+        start_date = (now - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')
+    elif period == "year":
+        start_date = (now - timedelta(days=365)).strftime('%Y-%m-%d %H:%M:%S')
+    else:  # all_time
+        start_date = None
+    
+    if start_date:
+        cursor.execute("""
+            SELECT o.order_id, o.order_number, o.user_id, o.session_id, o.phone_number, o.full_name, 
+                   o.total_amount, o.status, o.created_at,
+                   GROUP_CONCAT(p.product_name || ' x' || oi.quantity || ' (' || oi.price || '₽)') as items
+            FROM orders o
+            LEFT JOIN order_items oi ON o.order_id = oi.order_id
+            LEFT JOIN products p ON oi.product_id = p.product_id
+            WHERE o.created_at >= ?
+            GROUP BY o.order_id
+            ORDER BY o.created_at DESC
+        """, (start_date,))
+    else:
+        cursor.execute("""
+            SELECT o.order_id, o.order_number, o.user_id, o.session_id, o.phone_number, o.full_name, 
+                   o.total_amount, o.status, o.created_at,
+                   GROUP_CONCAT(p.product_name || ' x' || oi.quantity || ' (' || oi.price || '₽)') as items
+            FROM orders o
+            LEFT JOIN order_items oi ON o.order_id = oi.order_id
+            LEFT JOIN products p ON oi.product_id = p.product_id
+            GROUP BY o.order_id
+            ORDER BY o.created_at DESC
+        """)
+    
+    orders = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "order_id": order[0],
+            "order_number": order[1],
+            "user_id": order[2],
+            "session_id": order[3],
+            "phone_number": order[4],
+            "full_name": order[5],
+            "total_amount": order[6],
+            "status": order[7],
+            "created_at": order[8],
+            "items": order[9] or "Нет товаров"
         }
         for order in orders
     ]

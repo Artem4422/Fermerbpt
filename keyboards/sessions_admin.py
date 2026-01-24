@@ -4,6 +4,7 @@ import database
 
 def get_sessions_keyboard_for_admin(action: str = "select") -> InlineKeyboardMarkup:
     """Создает клавиатуру с кнопками сессий для администратора"""
+    # Всегда показываем все сессии
     sessions = database.get_all_sessions()
     
     if not sessions:

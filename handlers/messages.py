@@ -243,6 +243,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data.pop('waiting_for_order_number', None)
             await update.message.reply_text("❌ У вас нет прав для поиска заказов!")
     
+    # Обработка изменения количества ящиков товара
+    elif context.user_data.get('changing_box_volume'):
+        if not database.is_admin(user_id):
+            context.user_data.pop('changing_box_volume', None)
+            await update.message.reply_text("❌ У вас нет прав для изменения количества ящиков!")
+            return
+        
+        try:
+            new_boxes_count = int(update.message.text.strip())
+            if new_boxes_count >= 0:
+                product_id = context.user_data['changing_box_volume']['product_id']
+                old_boxes = context.user_data['changing_box_volume']['current_boxes']
+                
+                if database.update_product_boxes_count(product_id, new_boxes_count):
+                    product = database.get_product(product_id)
+                    await update.message.reply_text(
+                        f"✅ Количество ящиков успешно изменено!\n\n"
+                        f"Товар: {product['product_name']}\n"
+                        f"Было: {old_boxes} ящиков\n"
+                        f"Стало: {new_boxes_count} ящиков"
+                    )
+                    context.user_data.pop('changing_box_volume', None)
+                else:
+                    await update.message.reply_text("❌ Ошибка при изменении количества ящиков!")
+            else:
+                await update.message.reply_text("❌ Количество ящиков не может быть отрицательным!")
+        except ValueError:
+            await update.message.reply_text("❌ Введите корректное целое число!")
+    
     # Обработка добавления менеджера администратором
     elif context.user_data.get('waiting_for_manager_id'):
         if database.is_admin(user_id):
