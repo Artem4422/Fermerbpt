@@ -701,6 +701,217 @@ def get_order_items(order_id: int) -> list:
     ]
 
 
+def get_order_item(item_id: int) -> Optional[dict]:
+    """Получает информацию о товаре в заказе"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT oi.item_id, oi.order_id, oi.product_id, oi.quantity, oi.price, p.product_name
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.product_id
+        WHERE oi.item_id = ?
+    """, (item_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {
+            "item_id": row[0],
+            "order_id": row[1],
+            "product_id": row[2],
+            "quantity": row[3],
+            "price": row[4],
+            "product_name": row[5]
+        }
+    return None
+
+
+def delete_order_item(item_id: int, order_id: int) -> bool:
+    """Удаляет товар из заказа"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        # Получаем информацию о товаре перед удалением
+        cursor.execute("SELECT product_id, quantity FROM order_items WHERE item_id = ?", (item_id,))
+        item_data = cursor.fetchone()
+        
+        if not item_data:
+            conn.close()
+            return False
+        
+        product_id, quantity = item_data
+        
+        # Получаем статус заказа
+        cursor.execute("SELECT status FROM orders WHERE order_id = ?", (order_id,))
+        order_status = cursor.fetchone()
+        
+        if order_status and order_status[0] == 'completed':
+            # Если заказ выдан, возвращаем лимит
+            cursor.execute("SELECT user_id, session_id FROM orders WHERE order_id = ?", (order_id,))
+            order_info = cursor.fetchone()
+            if order_info:
+                user_id, session_id = order_info
+                cursor.execute("""
+                    UPDATE user_session_limits 
+                    SET boxes_purchased = boxes_purchased - ?
+                    WHERE user_id = ? AND session_id = ?
+                """, (quantity, user_id, session_id))
+        
+        # Возвращаем количество ящиков товара
+        cursor.execute("""
+            UPDATE products 
+            SET boxes_count = boxes_count + ? 
+            WHERE product_id = ?
+        """, (quantity, product_id))
+        
+        # Удаляем товар из заказа
+        cursor.execute("DELETE FROM order_items WHERE item_id = ?", (item_id,))
+        
+        # Пересчитываем общую сумму заказа
+        cursor.execute("""
+            SELECT SUM(oi.quantity * oi.price)
+            FROM order_items oi
+            WHERE oi.order_id = ?
+        """, (order_id,))
+        new_total = cursor.fetchone()[0] or 0
+        cursor.execute("UPDATE orders SET total_amount = ? WHERE order_id = ?", (new_total, order_id))
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Товар {item_id} удален из заказа {order_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при удалении товара из заказа: {e}")
+        conn.rollback()
+        conn.close()
+        return False
+
+
+def update_order_item_quantity(item_id: int, new_quantity: int) -> bool:
+    """Обновляет количество товара в заказе"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        # Получаем текущее количество и информацию о заказе
+        cursor.execute("""
+            SELECT oi.quantity, oi.product_id, o.order_id, o.status, o.user_id, o.session_id
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.order_id
+            WHERE oi.item_id = ?
+        """, (item_id,))
+        item_data = cursor.fetchone()
+        
+        if not item_data:
+            conn.close()
+            return False
+        
+        old_quantity, product_id, order_id, order_status, user_id, session_id = item_data
+        quantity_diff = new_quantity - old_quantity
+        
+        # Обновляем количество
+        cursor.execute("UPDATE order_items SET quantity = ? WHERE item_id = ?", (new_quantity, item_id))
+        
+        # Обновляем количество ящиков товара
+        cursor.execute("""
+            UPDATE products 
+            SET boxes_count = boxes_count - ? 
+            WHERE product_id = ?
+        """, (quantity_diff, product_id))
+        
+        # Если заказ выдан, обновляем лимит
+        if order_status == 'completed' and quantity_diff != 0:
+            cursor.execute("""
+                UPDATE user_session_limits 
+                SET boxes_purchased = boxes_purchased + ?
+                WHERE user_id = ? AND session_id = ?
+            """, (quantity_diff, user_id, session_id))
+        
+        # Пересчитываем общую сумму заказа
+        cursor.execute("""
+            SELECT SUM(oi.quantity * oi.price)
+            FROM order_items oi
+            WHERE oi.order_id = ?
+        """, (order_id,))
+        new_total = cursor.fetchone()[0] or 0
+        cursor.execute("UPDATE orders SET total_amount = ? WHERE order_id = ?", (new_total, order_id))
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Количество товара {item_id} обновлено на {new_quantity}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении количества товара: {e}")
+        conn.rollback()
+        conn.close()
+        return False
+
+
+def add_item_to_order(order_id: int, product_id: int, quantity: int) -> bool:
+    """Добавляет товар в заказ"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        # Получаем цену товара
+        cursor.execute("SELECT price FROM products WHERE product_id = ?", (product_id,))
+        product_data = cursor.fetchone()
+        
+        if not product_data:
+            conn.close()
+            return False
+        
+        price = product_data[0]
+        
+        # Получаем информацию о заказе
+        cursor.execute("SELECT status, user_id, session_id FROM orders WHERE order_id = ?", (order_id,))
+        order_data = cursor.fetchone()
+        
+        if not order_data:
+            conn.close()
+            return False
+        
+        order_status, user_id, session_id = order_data
+        
+        # Добавляем товар в заказ
+        cursor.execute("""
+            INSERT INTO order_items (order_id, product_id, quantity, price)
+            VALUES (?, ?, ?, ?)
+        """, (order_id, product_id, quantity, price))
+        
+        # Уменьшаем количество ящиков товара
+        cursor.execute("""
+            UPDATE products 
+            SET boxes_count = boxes_count - ? 
+            WHERE product_id = ?
+        """, (quantity, product_id))
+        
+        # Если заказ выдан, обновляем лимит
+        if order_status == 'completed':
+            cursor.execute("""
+                INSERT INTO user_session_limits (user_id, session_id, boxes_purchased)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id, session_id) 
+                DO UPDATE SET boxes_purchased = boxes_purchased + ?
+            """, (user_id, session_id, quantity, quantity))
+        
+        # Пересчитываем общую сумму заказа
+        cursor.execute("""
+            SELECT SUM(oi.quantity * oi.price)
+            FROM order_items oi
+            WHERE oi.order_id = ?
+        """, (order_id,))
+        new_total = cursor.fetchone()[0] or 0
+        cursor.execute("UPDATE orders SET total_amount = ? WHERE order_id = ?", (new_total, order_id))
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Товар {product_id} добавлен в заказ {order_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении товара в заказ: {e}")
+        conn.rollback()
+        conn.close()
+        return False
+
+
 def get_order_status_ru(status: str) -> str:
     """Переводит статус заказа на русский язык"""
     status_map = {
@@ -801,6 +1012,67 @@ def update_order_status(order_id: int, status: str) -> bool:
         return False
 
 
+def delete_order(order_id: int) -> bool:
+    """Удаляет заказ и все связанные данные"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        # Получаем информацию о заказе перед удалением
+        cursor.execute("SELECT status, user_id, session_id FROM orders WHERE order_id = ?", (order_id,))
+        order_data = cursor.fetchone()
+        
+        if not order_data:
+            conn.close()
+            return False
+        
+        old_status = order_data[0]
+        user_id = order_data[1]
+        session_id = order_data[2]
+        
+        # Если заказ был выдан, возвращаем лимит
+        if old_status == 'completed':
+            cursor.execute("""
+                SELECT SUM(quantity) FROM order_items WHERE order_id = ?
+            """, (order_id,))
+            total_boxes = cursor.fetchone()[0] or 0
+            
+            if total_boxes > 0:
+                cursor.execute("""
+                    UPDATE user_session_limits 
+                    SET boxes_purchased = boxes_purchased - ?
+                    WHERE user_id = ? AND session_id = ?
+                """, (total_boxes, user_id, session_id))
+        
+        # Возвращаем количество ящиков товара
+        cursor.execute("""
+            SELECT product_id, quantity FROM order_items WHERE order_id = ?
+        """, (order_id,))
+        items = cursor.fetchall()
+        
+        for product_id, quantity in items:
+            cursor.execute("""
+                UPDATE products 
+                SET boxes_count = boxes_count + ? 
+                WHERE product_id = ?
+            """, (quantity, product_id))
+        
+        # Удаляем товары заказа
+        cursor.execute("DELETE FROM order_items WHERE order_id = ?", (order_id,))
+        
+        # Удаляем сам заказ
+        cursor.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Заказ {order_id} удален")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при удалении заказа: {e}")
+        conn.rollback()
+        conn.close()
+        return False
+
+
 def get_session_orders(session_id: int) -> list:
     """Получает все заказы для сессии"""
     conn = sqlite3.connect(DB_NAME)
@@ -832,6 +1104,68 @@ def get_session_orders(session_id: int) -> list:
         }
         for order in orders
     ]
+
+
+def get_session_sales_stats(session_id: int) -> dict:
+    """Получает статистику продаж по сессии"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    # Общее количество заказов
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE session_id = ?", (session_id,))
+    total_orders = cursor.fetchone()[0] or 0
+    
+    # Заказы по статусам
+    cursor.execute("""
+        SELECT status, COUNT(*) 
+        FROM orders 
+        WHERE session_id = ?
+        GROUP BY status
+    """, (session_id,))
+    status_counts = {row[0]: row[1] for row in cursor.fetchall()}
+    
+    completed_orders = status_counts.get('completed', 0)
+    processing_orders = status_counts.get('processing', 0)
+    pending_orders = status_counts.get('pending', 0)
+    cancelled_orders = status_counts.get('cancelled', 0)
+    
+    # Общая выручка (только выданные заказы)
+    cursor.execute("""
+        SELECT COALESCE(SUM(total_amount), 0)
+        FROM orders
+        WHERE session_id = ? AND status = 'completed'
+    """, (session_id,))
+    total_revenue = cursor.fetchone()[0] or 0
+    
+    # Всего продано ящиков (только выданные заказы)
+    cursor.execute("""
+        SELECT COALESCE(SUM(oi.quantity), 0)
+        FROM orders o
+        JOIN order_items oi ON o.order_id = oi.order_id
+        WHERE o.session_id = ? AND o.status = 'completed'
+    """, (session_id,))
+    total_boxes_sold = cursor.fetchone()[0] or 0
+    
+    # Уникальных клиентов
+    cursor.execute("""
+        SELECT COUNT(DISTINCT user_id)
+        FROM orders
+        WHERE session_id = ?
+    """, (session_id,))
+    unique_customers = cursor.fetchone()[0] or 0
+    
+    conn.close()
+    
+    return {
+        'total_orders': total_orders,
+        'completed_orders': completed_orders,
+        'processing_orders': processing_orders,
+        'pending_orders': pending_orders,
+        'cancelled_orders': cancelled_orders,
+        'total_revenue': total_revenue,
+        'total_boxes_sold': total_boxes_sold,
+        'unique_customers': unique_customers
+    }
 
 
 def get_orders_by_period(period: str) -> list:

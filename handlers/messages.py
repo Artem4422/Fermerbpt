@@ -280,6 +280,168 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except ValueError:
             await update.message.reply_text("❌ Введите корректное целое число!")
     
+    # Обработка изменения заказа администратором
+    elif context.user_data.get('waiting_for_order_to_edit'):
+        if database.is_admin(user_id):
+            order_number = update.message.text.strip()
+            order = database.find_order_by_number(order_number)
+            
+            if order:
+                order_items = database.get_order_items(order['order_id'])
+                session = database.get_session(order['session_id'])
+                
+                items_text = "\n".join([
+                    f"• {item['product_name']} x{item['quantity']} = {item['quantity'] * item['price']}₽"
+                    for item in order_items
+                ])
+                
+                from keyboards.order_edit import get_order_edit_keyboard
+                keyboard = get_order_edit_keyboard(order['order_id'])
+                
+                await update.message.reply_text(
+                    f"📋 Заказ #{order['order_number']}\n\n"
+                    f"📦 Сессия: {session['session_name'] if session else 'Не найдена'}\n"
+                    f"👤 ФИО: {order['full_name']}\n"
+                    f"📱 Телефон: {order['phone_number']}\n"
+                    f"📊 Статус: {database.get_order_status_ru(order['status'])}\n"
+                    f"📅 Дата: {order['created_at']}\n\n"
+                    f"Товары:\n{items_text}\n\n"
+                    f"💰 Общая сумма: {order['total_amount']}₽",
+                    reply_markup=keyboard
+                )
+                context.user_data.pop('waiting_for_order_to_edit', None)
+            else:
+                await update.message.reply_text(
+                    f"❌ Заказ с номером {order_number} не найден!\n\n"
+                    f"Попробуйте еще раз."
+                )
+        else:
+            context.user_data.pop('waiting_for_order_to_edit', None)
+            await update.message.reply_text("❌ У вас нет прав для изменения заказов!")
+    
+    # Обработка редактирования количества товара в заказе
+    elif context.user_data.get('editing_order_item'):
+        if not database.is_admin(user_id):
+            context.user_data.pop('editing_order_item', None)
+            await update.message.reply_text("❌ У вас нет прав для редактирования заказов!")
+            return
+        
+        try:
+            new_quantity = int(update.message.text.strip())
+            if new_quantity > 0:
+                item_data = context.user_data['editing_order_item']
+                order_id = item_data['order_id']
+                item_id = item_data['item_id']
+                
+                if database.update_order_item_quantity(item_id, new_quantity):
+                    order = database.get_order(order_id)
+                    order_items = database.get_order_items(order_id)
+                    
+                    items_text = "\n".join([
+                        f"• {item['product_name']} x{item['quantity']} = {item['quantity'] * item['price']}₽"
+                        for item in order_items
+                    ])
+                    
+                    from keyboards.order_edit_items import get_order_items_edit_keyboard
+                    keyboard = get_order_items_edit_keyboard(order_id, order_items)
+                    
+                    await update.message.reply_text(
+                        f"✅ Количество товара успешно изменено!\n\n"
+                        f"Заказ #{order['order_number']}\n\n"
+                        f"Текущий состав:\n{items_text}\n\n"
+                        f"💰 Общая сумма: {order['total_amount']}₽",
+                        reply_markup=keyboard
+                    )
+                    context.user_data.pop('editing_order_item', None)
+                else:
+                    await update.message.reply_text("❌ Ошибка при изменении количества товара!")
+            else:
+                await update.message.reply_text("❌ Количество должно быть больше нуля!")
+        except ValueError:
+            await update.message.reply_text("❌ Введите корректное целое число!")
+    
+    # Обработка добавления товара в заказ
+    elif context.user_data.get('adding_item_to_order'):
+        if not database.is_admin(user_id):
+            context.user_data.pop('adding_item_to_order', None)
+            await update.message.reply_text("❌ У вас нет прав для редактирования заказов!")
+            return
+        
+        item_data = context.user_data['adding_item_to_order']
+        step = item_data.get('step')
+        text = update.message.text.strip()
+        
+        if step == 'quantity':
+            try:
+                quantity = int(text)
+                if quantity > 0:
+                    order_id = item_data['order_id']
+                    product_id = item_data['product_id']
+                    
+                    if database.add_item_to_order(order_id, product_id, quantity):
+                        order = database.get_order(order_id)
+                        order_items = database.get_order_items(order_id)
+                        
+                        items_text = "\n".join([
+                            f"• {item['product_name']} x{item['quantity']} = {item['quantity'] * item['price']}₽"
+                            for item in order_items
+                        ])
+                        
+                        from keyboards.order_edit_items import get_order_items_edit_keyboard
+                        keyboard = get_order_items_edit_keyboard(order_id, order_items)
+                        
+                        await update.message.reply_text(
+                            f"✅ Товар успешно добавлен в заказ!\n\n"
+                            f"Заказ #{order['order_number']}\n\n"
+                            f"Текущий состав:\n{items_text}\n\n"
+                            f"💰 Общая сумма: {order['total_amount']}₽",
+                            reply_markup=keyboard
+                        )
+                        context.user_data.pop('adding_item_to_order', None)
+                    else:
+                        await update.message.reply_text("❌ Ошибка при добавлении товара в заказ!")
+                else:
+                    await update.message.reply_text("❌ Количество должно быть больше нуля!")
+            except ValueError:
+                await update.message.reply_text("❌ Введите корректное целое число!")
+    
+    # Обработка добавления администратора
+    elif context.user_data.get('waiting_for_admin_id'):
+        if database.is_admin(user_id):
+            try:
+                admin_id = int(update.message.text.strip())
+                
+                # Проверяем, существует ли пользователь
+                user_info = database.get_user_info(admin_id)
+                if not user_info:
+                    # Создаем минимальную запись пользователя
+                    database.save_or_update_user(
+                        type('User', (), {
+                            'id': admin_id,
+                            'username': None,
+                            'first_name': f'User_{admin_id}',
+                            'last_name': None,
+                            'language_code': None,
+                            'is_bot': False
+                        })(),
+                        admin_id
+                    )
+                
+                if database.add_admin(admin_id):
+                    context.user_data.pop('waiting_for_admin_id', None)
+                    await update.message.reply_text(
+                        f"✅ Администратор с ID {admin_id} успешно добавлен!"
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"❌ Ошибка при добавлении администратора. Возможно, он уже является администратором."
+                    )
+            except ValueError:
+                await update.message.reply_text("❌ Введите корректный ID пользователя (число)!")
+        else:
+            context.user_data.pop('waiting_for_admin_id', None)
+            await update.message.reply_text("❌ У вас нет прав для добавления администраторов!")
+    
     # Обработка добавления менеджера администратором
     elif context.user_data.get('waiting_for_manager_id'):
         if database.is_admin(user_id):
@@ -376,15 +538,35 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     masked_name = qr_code.mask_name(order['full_name'])
                     masked_phone = qr_code.mask_phone(order['phone_number'])
                     
-                    await update.message.reply_text(
-                        f"📋 Заказ #{order['order_number']}\n\n"
-                        f"📦 Сессия: {session['session_name'] if session else 'Не найдена'}\n"
-                        f"👤 ФИО: {masked_name}\n"
-                        f"📱 Телефон: {masked_phone}\n"
-                        f"📊 Статус: {database.get_order_status_ru(order['status'])}\n\n"
-                        f"Товары:\n{items_text}\n\n"
-                        f"💰 Общая сумма: {order['total_amount']}₽"
-                    )
+                    # Проверяем, ожидает ли админ заказ для редактирования
+                    if context.user_data.get('waiting_for_order_to_edit'):
+                        from keyboards.order_edit import get_order_edit_keyboard
+                        keyboard = get_order_edit_keyboard(order['order_id'])
+                        await update.message.reply_text(
+                            f"📋 Заказ #{order['order_number']}\n\n"
+                            f"📦 Сессия: {session['session_name'] if session else 'Не найдена'}\n"
+                            f"👤 ФИО: {order['full_name']}\n"
+                            f"📱 Телефон: {order['phone_number']}\n"
+                            f"📊 Статус: {database.get_order_status_ru(order['status'])}\n"
+                            f"📅 Дата: {order['created_at']}\n\n"
+                            f"Товары:\n{items_text}\n\n"
+                            f"💰 Общая сумма: {order['total_amount']}₽",
+                            reply_markup=keyboard
+                        )
+                        context.user_data.pop('waiting_for_order_to_edit', None)
+                    else:
+                        # Обычное сканирование для просмотра
+                        masked_name = qr_code.mask_name(order['full_name'])
+                        masked_phone = qr_code.mask_phone(order['phone_number'])
+                        await update.message.reply_text(
+                            f"📋 Заказ #{order['order_number']}\n\n"
+                            f"📦 Сессия: {session['session_name'] if session else 'Не найдена'}\n"
+                            f"👤 ФИО: {masked_name}\n"
+                            f"📱 Телефон: {masked_phone}\n"
+                            f"📊 Статус: {database.get_order_status_ru(order['status'])}\n\n"
+                            f"Товары:\n{items_text}\n\n"
+                            f"💰 Общая сумма: {order['total_amount']}₽"
+                        )
             else:
                 await update.message.reply_text(
                     f"❌ Заказ с номером {order_number} не найден!"

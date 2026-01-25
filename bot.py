@@ -51,9 +51,20 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^manager_"))
     application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^admin_select_session_report_"))
     application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^admin_remove_manager_"))
+    application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^admin_remove_admin_"))
     
     # Регистрируем обработчик для получения QR-кода
     application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^get_qr_"))
+    
+    # Регистрируем обработчики для редактирования заказов
+    application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^admin_order_"))
+    application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^admin_edit_order_items_"))
+    application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^admin_delete_order_"))
+    application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^admin_confirm_delete_order_"))
+    application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^admin_edit_item_"))
+    application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^admin_delete_item_"))
+    application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^admin_add_item_to_order_"))
+    application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^admin_select_product_add_to_order_"))
 
     # Запускаем бота
     logger.info("Бот запущен...")

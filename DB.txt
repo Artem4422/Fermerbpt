@@ -80,13 +80,13 @@
 
 ЯЧЕЙКИ:
 - order_id (INTEGER PRIMARY KEY AUTOINCREMENT) - Уникальный идентификатор заказа
-- order_number (TEXT NOT NULL UNIQUE) - Уникальный номер заказа (8 цифр)
+- order_number (TEXT NOT NULL UNIQUE) - Уникальный номер заказа (6 цифр)
 - user_id (INTEGER NOT NULL) - ID пользователя, сделавшего заказ (связь с таблицей users)
 - session_id (INTEGER NOT NULL) - ID сессии, к которой относится заказ (связь с таблицей sessions)
 - phone_number (TEXT) - Номер телефона покупателя
 - full_name (TEXT) - ФИО покупателя
-- total_amount (REAL NOT NULL DEFAULT 0) - Общая сумма заказа
-- status (TEXT DEFAULT 'pending') - Статус заказа
+- total_amount (REAL NOT NULL DEFAULT 0) - Общая сумма заказа (пересчитывается при изменении состава заказа)
+- status (TEXT DEFAULT 'pending') - Статус заказа ('pending', 'processing', 'completed', 'cancelled')
 - created_at (TIMESTAMP DEFAULT CURRENT_TIMESTAMP) - Дата и время создания заказа
 
 ТАБЛИЦА: order_items

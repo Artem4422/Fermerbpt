@@ -481,19 +481,296 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.answer("❌ Товар не найден!", show_alert=True)
     
     elif callback_data == "admin_change_order":
-        await query.edit_message_text("📋 Изменить заказ\n\nФункция в разработке...")
+        # Запрос номера заказа или QR-кода
+        if database.is_admin(user_id):
+            context.user_data['waiting_for_order_to_edit'] = True
+            await query.edit_message_text(
+                "📋 Изменить заказ\n\n"
+                "Введите номер заказа или отправьте фото с QR-кодом:"
+            )
+        else:
+            await query.answer("❌ У вас нет прав для изменения заказов!", show_alert=True)
     
-    elif callback_data == "admin_payment_status":
-        await query.edit_message_text("💳 Статус оплаты\n\nФункция в разработке...")
+    elif callback_data.startswith("admin_edit_order_items_"):
+        # Редактирование состава заказа
+        order_id = int(callback_data.split("_")[-1])
+        order = database.get_order(order_id)
+        
+        if order:
+            order_items = database.get_order_items(order_id)
+            session = database.get_session(order['session_id'])
+            
+            # Показываем текущий состав заказа и предлагаем изменить
+            items_text = "\n".join([
+                f"• {item['product_name']} x{item['quantity']} = {item['quantity'] * item['price']}₽"
+                for item in order_items
+            ])
+            
+            from keyboards.order_edit_items import get_order_items_edit_keyboard
+            keyboard = get_order_items_edit_keyboard(order_id, order_items)
+            
+            await query.edit_message_text(
+                f"✏️ Изменить состав заказа #{order['order_number']}\n\n"
+                f"Текущий состав:\n{items_text}\n\n"
+                f"Выберите товар для изменения или удаления:",
+                reply_markup=keyboard
+            )
+        else:
+            await query.answer("❌ Заказ не найден!", show_alert=True)
+    
+    elif callback_data.startswith("admin_delete_order_"):
+        # Удаление заказа
+        order_id = int(callback_data.split("_")[-1])
+        order = database.get_order(order_id)
+        
+        if order:
+            from keyboards.order_edit import get_confirm_delete_order_keyboard
+            keyboard = get_confirm_delete_order_keyboard(order_id)
+            
+            await query.edit_message_text(
+                f"⚠️ Вы уверены, что хотите удалить заказ #{order['order_number']}?\n\n"
+                f"Это действие нельзя отменить!",
+                reply_markup=keyboard
+            )
+        else:
+            await query.answer("❌ Заказ не найден!", show_alert=True)
+    
+    elif callback_data.startswith("admin_confirm_delete_order_"):
+        # Подтверждение удаления заказа
+        order_id = int(callback_data.split("_")[-1])
+        order = database.get_order(order_id)
+        
+        if order:
+            if database.delete_order(order_id):
+                await query.edit_message_text(
+                    f"✅ Заказ #{order['order_number']} успешно удален!"
+                )
+            else:
+                await query.edit_message_text(
+                    f"❌ Ошибка при удалении заказа!"
+                )
+        else:
+            await query.answer("❌ Заказ не найден!", show_alert=True)
+    
+    elif callback_data.startswith("admin_order_"):
+        # Показ информации о заказе для редактирования
+        order_id = int(callback_data.split("_")[-1])
+        order = database.get_order(order_id)
+        
+        if order:
+            order_items = database.get_order_items(order_id)
+            session = database.get_session(order['session_id'])
+            
+            items_text = "\n".join([
+                f"• {item['product_name']} x{item['quantity']} = {item['quantity'] * item['price']}₽"
+                for item in order_items
+            ])
+            
+            from keyboards.order_edit import get_order_edit_keyboard
+            keyboard = get_order_edit_keyboard(order_id)
+            
+            await query.edit_message_text(
+                f"📋 Заказ #{order['order_number']}\n\n"
+                f"📦 Сессия: {session['session_name'] if session else 'Не найдена'}\n"
+                f"👤 ФИО: {order['full_name']}\n"
+                f"📱 Телефон: {order['phone_number']}\n"
+                f"📊 Статус: {database.get_order_status_ru(order['status'])}\n"
+                f"📅 Дата: {order['created_at']}\n\n"
+                f"Товары:\n{items_text}\n\n"
+                f"💰 Общая сумма: {order['total_amount']}₽",
+                reply_markup=keyboard
+            )
+        else:
+            await query.answer("❌ Заказ не найден!", show_alert=True)
+    
+    elif callback_data.startswith("admin_edit_item_"):
+        # Редактирование количества товара в заказе
+        parts = callback_data.split("_")
+        order_id = int(parts[3])
+        item_id = int(parts[4])
+        
+        order_item = database.get_order_item(item_id)
+        if order_item:
+            context.user_data['editing_order_item'] = {
+                'order_id': order_id,
+                'item_id': item_id,
+                'product_id': order_item['product_id'],
+                'current_quantity': order_item['quantity']
+            }
+            await query.edit_message_text(
+                f"✏️ Изменить количество товара\n\n"
+                f"Товар: {order_item['product_name']}\n"
+                f"Текущее количество: {order_item['quantity']}\n\n"
+                f"Введите новое количество:"
+            )
+        else:
+            await query.answer("❌ Товар в заказе не найден!", show_alert=True)
+    
+    elif callback_data.startswith("admin_delete_item_"):
+        # Удаление товара из заказа
+        parts = callback_data.split("_")
+        order_id = int(parts[3])
+        item_id = int(parts[4])
+        
+        if database.delete_order_item(item_id, order_id):
+            await query.answer("✅ Товар удален из заказа!")
+            # Обновляем информацию о заказе
+            order = database.get_order(order_id)
+            if order:
+                order_items = database.get_order_items(order_id)
+                session = database.get_session(order['session_id'])
+                
+                items_text = "\n".join([
+                    f"• {item['product_name']} x{item['quantity']} = {item['quantity'] * item['price']}₽"
+                    for item in order_items
+                ]) if order_items else "Товаров нет"
+                
+                from keyboards.order_edit_items import get_order_items_edit_keyboard
+                keyboard = get_order_items_edit_keyboard(order_id, order_items)
+                
+                await query.edit_message_text(
+                    f"✏️ Изменить состав заказа #{order['order_number']}\n\n"
+                    f"Текущий состав:\n{items_text}\n\n"
+                    f"Выберите товар для изменения или удаления:",
+                    reply_markup=keyboard
+                )
+        else:
+            await query.answer("❌ Ошибка при удалении товара!", show_alert=True)
+    
+    elif callback_data.startswith("admin_add_item_to_order_"):
+        # Добавление товара в заказ
+        order_id = int(callback_data.split("_")[-1])
+        order = database.get_order(order_id)
+        
+        if order:
+            # Показываем товары сессии для выбора
+            products = database.get_products_by_session(order['session_id'])
+            if products:
+                from keyboards.products_admin import get_products_keyboard_for_admin
+                products_keyboard = get_products_keyboard_for_admin(order['session_id'], f"add_to_order_{order_id}")
+                await query.edit_message_text(
+                    f"➕ Добавить товар в заказ #{order['order_number']}\n\n"
+                    f"Выберите товар:",
+                    reply_markup=products_keyboard
+                )
+            else:
+                await query.edit_message_text("❌ В этой сессии нет товаров для добавления!")
+        else:
+            await query.answer("❌ Заказ не найден!", show_alert=True)
+    
+    elif callback_data.startswith("admin_select_product_add_to_order_"):
+        # Админ выбрал товар для добавления в заказ
+        parts = callback_data.split("_")
+        order_id = int(parts[-1])
+        product_id = int(parts[-2])
+        
+        order = database.get_order(order_id)
+        product = database.get_product(product_id)
+        
+        if order and product:
+            context.user_data['adding_item_to_order'] = {
+                'order_id': order_id,
+                'product_id': product_id,
+                'step': 'quantity'
+            }
+            await query.edit_message_text(
+                f"➕ Добавить товар в заказ #{order['order_number']}\n\n"
+                f"Товар: {product['product_name']}\n"
+                f"Цена: {product['price']}₽ за ящик\n"
+                f"Доступно: {product['boxes_count']} ящиков\n\n"
+                f"Введите количество ящиков:"
+            )
+        else:
+            await query.answer("❌ Заказ или товар не найден!", show_alert=True)
     
     elif callback_data == "admin_sales_status":
-        await query.edit_message_text("📊 Статус продаж\n\nФункция в разработке...")
+        # Показываем список сессий для выбора
+        if database.is_admin(user_id):
+            from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+            sessions_keyboard = get_sessions_keyboard_for_admin("sales_status")
+            await query.edit_message_text(
+                "📊 Статус продаж\n\n"
+                "Выберите сессию для просмотра статистики:",
+                reply_markup=sessions_keyboard
+            )
+        else:
+            await query.answer("❌ У вас нет прав для просмотра статистики!", show_alert=True)
+    
+    elif callback_data.startswith("admin_select_session_sales_status_"):
+        # Показываем статистику продаж по сессии
+        session_id = int(callback_data.split("_")[-1])
+        session = database.get_session(session_id)
+        
+        if session:
+            stats = database.get_session_sales_stats(session_id)
+            
+            status_text = "✅ Активна" if session.get('is_active') else "❌ Остановлена"
+            
+            stats_message = (
+                f"📊 Статус продаж - {session['session_name']}\n"
+                f"Статус сессии: {status_text}\n\n"
+                f"📦 Всего заказов: {stats['total_orders']}\n"
+                f"✅ Выдано: {stats['completed_orders']}\n"
+                f"⏳ В обработке: {stats['processing_orders']}\n"
+                f"🕐 Ожидает обработки: {stats['pending_orders']}\n"
+                f"❌ Отменено: {stats['cancelled_orders']}\n\n"
+                f"💰 Общая выручка: {stats['total_revenue']:.2f}₽\n"
+                f"📦 Всего продано ящиков: {stats['total_boxes_sold']}\n"
+            )
+            
+            if stats['completed_orders'] > 0:
+                avg_check = stats['total_revenue'] / stats['completed_orders']
+                stats_message += f"💵 Средний чек: {avg_check:.2f}₽\n"
+            
+            stats_message += f"\n👥 Уникальных клиентов: {stats['unique_customers']}"
+            
+            from keyboards.admin import get_admin_keyboard
+            keyboard = get_admin_keyboard()
+            await query.edit_message_text(stats_message, reply_markup=keyboard)
+        else:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
     
     elif callback_data == "admin_add_admin":
-        await query.edit_message_text("👑 Назначить администратора\n\nФункция в разработке...")
+        # Запрос ID пользователя для добавления в администраторы
+        if database.is_admin(user_id):
+            context.user_data['waiting_for_admin_id'] = True
+            await query.edit_message_text(
+                "👤 Назначить администратора\n\n"
+                "Введите ID пользователя для добавления в администраторы:"
+            )
+        else:
+            await query.answer("❌ У вас нет прав для назначения администраторов!", show_alert=True)
     
     elif callback_data == "admin_remove_admin":
-        await query.edit_message_text("🔻 Снять администратора\n\nФункция в разработке...")
+        # Показываем список администраторов для удаления
+        if database.is_admin(user_id):
+            from keyboards.admins_admin import get_admins_keyboard
+            admins_keyboard = get_admins_keyboard("remove")
+            await query.edit_message_text(
+                "👤 Снять администратора\n\n"
+                "Выберите администратора для снятия:",
+                reply_markup=admins_keyboard
+            )
+        else:
+            await query.answer("❌ У вас нет прав для снятия администраторов!", show_alert=True)
+    
+    elif callback_data.startswith("admin_remove_admin_"):
+        # Удаление администратора
+        admin_id = int(callback_data.split("_")[-1])
+        
+        # Нельзя удалить самого себя
+        if admin_id == user_id:
+            await query.answer("❌ Вы не можете удалить самого себя!", show_alert=True)
+            return
+        
+        if database.remove_admin(admin_id):
+            await query.edit_message_text(
+                f"✅ Администратор с ID {admin_id} успешно снят!"
+            )
+        else:
+            await query.edit_message_text(
+                f"❌ Ошибка при снятии администратора. Возможно, он не является администратором."
+            )
     
     elif callback_data == "admin_add_manager":
         # Запрашиваем ID пользователя для добавления менеджера
