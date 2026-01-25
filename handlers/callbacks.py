@@ -1,12 +1,27 @@
 from telegram import Update
 from telegram.ext import ContextTypes
+from telegram.error import BadRequest
 import database
 import config
 import sqlite3
 import logging
+import asyncio
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+
+async def safe_edit_message_text(query, text: str, reply_markup=None):
+    """Безопасное редактирование сообщения с обработкой ошибки 'Message is not modified'"""
+    try:
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            # Игнорируем ошибку если сообщение не изменилось
+            pass
+        else:
+            # Пробрасываем другие ошибки
+            raise
 
 
 async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1184,11 +1199,18 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         # Выбор сессии для отчета
         from keyboards.sessions_admin import get_sessions_keyboard_for_admin
         sessions_keyboard = get_sessions_keyboard_for_admin("report")
-        await query.edit_message_text(
-            "📊 Отчет\n\n"
-            "Выберите сессию для формирования отчета:",
-            reply_markup=sessions_keyboard
-        )
+        try:
+            await query.edit_message_text(
+                "📊 Отчет\n\n"
+                "Выберите сессию для формирования отчета:",
+                reply_markup=sessions_keyboard
+            )
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                # Игнорируем ошибку если сообщение не изменилось
+                pass
+            else:
+                raise
     
     elif callback_data.startswith("admin_select_session_report_"):
         # Генерация отчета для сессии
@@ -1230,20 +1252,67 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             
             report_text = "\n".join(report_lines)
             
-            # Генерируем изображение отчета
+            # Генерируем изображения отчета (разбиваем на части)
             try:
                 from PIL import Image, ImageDraw, ImageFont
                 import io
                 
-                # Создаем изображение
+                # Параметры изображения
                 img_width = 1000
                 line_height = 25
                 padding = 20
-                img_height = len(report_lines) * line_height + padding * 2
+                max_lines_per_image = 100  # Максимум строк на одно изображение
                 
-                img = Image.new('RGB', (img_width, img_height), color='white')
-                draw = ImageDraw.Draw(img)
+                # Заголовок и статистика (первые строки до разделителя)
+                header_lines = []
+                header_end_idx = 0
+                separator = "=" * 60
+                for i, line in enumerate(report_lines):
+                    header_lines.append(line)
+                    if line == separator:
+                        header_end_idx = i + 2  # +2 чтобы включить пустую строку после разделителя
+                        break
                 
+                # Заказы (остальные строки после заголовка)
+                if header_end_idx > 0:
+                    order_lines = report_lines[header_end_idx:]
+                else:
+                    # Если разделитель не найден, берем все строки после заголовка
+                    order_lines = report_lines[len(header_lines):]
+                
+                # Разбиваем на части
+                image_parts = []
+                
+                # Если нет заказов, отправляем только заголовок
+                if not order_lines:
+                    image_parts.append(header_lines)
+                else:
+                    # Вычисляем сколько строк заказов поместится в первую часть
+                    header_size = len(header_lines)
+                    available_lines = max_lines_per_image - header_size
+                    
+                    if available_lines > 0:
+                        # Первая часть: заголовок + первые заказы
+                        first_part = header_lines.copy()
+                        first_part.extend(order_lines[:available_lines])
+                        image_parts.append(first_part)
+                        
+                        # Остальные части: только заказы
+                        remaining_lines = order_lines[available_lines:]
+                    else:
+                        # Если заголовок слишком большой, начинаем с него
+                        image_parts.append(header_lines)
+                        remaining_lines = order_lines
+                    
+                    # Разбиваем оставшиеся заказы на части
+                    while remaining_lines:
+                        part = remaining_lines[:max_lines_per_image]
+                        # Добавляем заголовок в начало каждой части
+                        part_with_header = [f"ОТЧЕТ ПО СЕССИИ: {session['session_name']} (продолжение)", ""] + part
+                        image_parts.append(part_with_header)
+                        remaining_lines = remaining_lines[max_lines_per_image:]
+                
+                # Генерируем шрифт
                 try:
                     font = ImageFont.truetype("arial.ttf", 14)
                 except:
@@ -1252,29 +1321,55 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                     except:
                         font = ImageFont.load_default()
                 
-                y = padding
-                for line in report_lines:
-                    # Обрезаем длинные строки
-                    if len(line) > 80:
-                        line = line[:77] + "..."
-                    draw.text((padding, y), line, fill='black', font=font)
-                    y += line_height
+                # Создаем и отправляем изображения
+                images_to_send = []
+                for part_idx, part_lines in enumerate(image_parts):
+                    # Вычисляем высоту изображения
+                    img_height = len(part_lines) * line_height + padding * 2
+                    
+                    # Создаем изображение
+                    img = Image.new('RGB', (img_width, img_height), color='white')
+                    draw = ImageDraw.Draw(img)
+                    
+                    # Рисуем строки
+                    y = padding
+                    for line in part_lines:
+                        # Обрезаем длинные строки
+                        if len(line) > 80:
+                            line = line[:77] + "..."
+                        draw.text((padding, y), line, fill='black', font=font)
+                        y += line_height
+                    
+                    # Сохраняем в байты
+                    img_bytes = io.BytesIO()
+                    img.save(img_bytes, format='PNG')
+                    img_bytes.seek(0)
+                    images_to_send.append(img_bytes)
                 
-                # Сохраняем в байты
-                img_bytes = io.BytesIO()
-                img.save(img_bytes, format='PNG')
-                img_bytes.seek(0)
+                # Отправляем все изображения
+                total_parts = len(images_to_send)
+                for idx, img_bytes in enumerate(images_to_send):
+                    caption = f"📊 Отчет по сессии: {session['session_name']}\nЧасть {idx + 1} из {total_parts}"
+                    
+                    await query.message.reply_photo(
+                        photo=img_bytes,
+                        caption=caption
+                    )
+                    
+                    # Небольшая задержка между отправками (кроме последнего)
+                    if idx < total_parts - 1:
+                        await asyncio.sleep(0.5)
                 
-                await query.message.reply_photo(
-                    photo=img_bytes,
-                    caption=f"📊 Отчет по сессии: {session['session_name']}"
-                )
-                await query.edit_message_text("✅ Отчет успешно сформирован!")
+                await query.edit_message_text(f"✅ Отчет успешно сформирован! Отправлено {total_parts} изображений.")
             except Exception as e:
                 logger.error(f"Ошибка при генерации изображения: {e}")
                 # Если не удалось создать изображение, отправляем текстовый отчет
-                await query.edit_message_text(
-                    f"📊 Отчет по сессии: {session['session_name']}\n\n{report_text[:4000]}"
-                )
+                try:
+                    await query.edit_message_text(
+                        f"📊 Отчет по сессии: {session['session_name']}\n\n{report_text[:4000]}"
+                    )
+                except BadRequest as e:
+                    if "Message is not modified" not in str(e):
+                        raise
         else:
             await query.answer("❌ Сессия не найдена!", show_alert=True)
