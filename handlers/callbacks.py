@@ -18,6 +18,159 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     callback_data = query.data
     
+    # Обработка главного меню
+    if callback_data == "main_menu":
+        from keyboards.main import get_main_keyboard
+        await query.edit_message_text(
+            "Привет, я бот-фермер, готов помочь тебе!",
+            reply_markup=get_main_keyboard()
+        )
+        return
+    
+    elif callback_data == "main_buy":
+        # Переход к покупкам - показываем список сессий
+        from keyboards.sessions import get_sessions_keyboard
+        sessions_keyboard = get_sessions_keyboard()
+        sessions = database.get_all_sessions()
+        
+        if sessions:
+            sessions_text = "\n".join([
+                f"• {s['session_name']}"
+                for s in sessions
+            ])
+            await query.edit_message_text(
+                f"🛒 Выберите сессию для покупки:\n\n{sessions_text}",
+                reply_markup=sessions_keyboard
+            )
+        else:
+            await query.edit_message_text(
+                "❌ В данный момент нет доступных сессий для покупки.",
+                reply_markup=sessions_keyboard
+            )
+        return
+    
+    elif callback_data == "main_cabinet":
+        # Личный кабинет
+        from keyboards.cabinet import get_cabinet_keyboard
+        stats = database.get_user_statistics(user_id)
+        await query.edit_message_text(
+            f"👤 Личный кабинет\n\n"
+            f"📊 Статистика:\n"
+            f"• Куплено ящиков: {stats['total_boxes']}\n"
+            f"• Выдано заказов: {stats['completed_orders']}\n"
+            f"• Ожидает обработки: {stats['pending_orders']}\n"
+            f"• Общая сумма: {stats['total_amount']:.2f}₽\n\n"
+            f"Выберите действие:",
+            reply_markup=get_cabinet_keyboard()
+        )
+        return
+    
+    elif callback_data == "cabinet_cart":
+        # Корзина со всеми незавершенными заказами
+        pending_orders = database.get_user_pending_orders(user_id)
+        
+        if pending_orders:
+            from keyboards.cabinet import get_cart_sessions_keyboard
+            cart_keyboard = get_cart_sessions_keyboard(pending_orders)
+            
+            # Группируем по сессиям для отображения
+            sessions_dict = {}
+            for order in pending_orders:
+                session_id = order['session_id']
+                if session_id not in sessions_dict:
+                    sessions_dict[session_id] = {
+                        'session_name': order['session_name'],
+                        'orders': []
+                    }
+                sessions_dict[session_id]['orders'].append(order)
+            
+            cart_text = "🛒 Ваша корзина\n\n"
+            cart_text += "Незавершенные заказы по сессиям:\n\n"
+            
+            for session_id, session_data in sessions_dict.items():
+                cart_text += f"📦 {session_data['session_name']}:\n"
+                for order in session_data['orders']:
+                    cart_text += f"  • Заказ #{order['order_number']} - {database.get_order_status_ru(order['status'])}\n"
+                    cart_text += f"    Товары: {order['items']}\n"
+                    cart_text += f"    Сумма: {order['total_amount']:.2f}₽\n\n"
+            
+            await query.edit_message_text(
+                cart_text,
+                reply_markup=cart_keyboard
+            )
+        else:
+            from keyboards.cabinet import get_cabinet_keyboard
+            cabinet_keyboard = get_cabinet_keyboard()
+            await query.edit_message_text(
+                "🛒 Ваша корзина\n\n"
+                "У вас нет незавершенных заказов.",
+                reply_markup=cabinet_keyboard
+            )
+        return
+    
+    elif callback_data.startswith("cabinet_cart_session_"):
+        # Заказы конкретной сессии
+        session_id = int(callback_data.split("_")[-1])
+        pending_orders = database.get_user_pending_orders(user_id)
+        session_orders = [o for o in pending_orders if o['session_id'] == session_id]
+        
+        if session_orders:
+            from keyboards.cabinet import get_cart_orders_keyboard
+            orders_keyboard = get_cart_orders_keyboard(session_id, session_orders)
+            
+            session_name = session_orders[0]['session_name'] if session_orders else "Неизвестная сессия"
+            orders_text = f"📦 {session_name}\n\n"
+            orders_text += "Ваши заказы:\n\n"
+            
+            for order in session_orders:
+                orders_text += f"Заказ #{order['order_number']}\n"
+                orders_text += f"Статус: {database.get_order_status_ru(order['status'])}\n"
+                orders_text += f"Товары: {order['items']}\n"
+                orders_text += f"Сумма: {order['total_amount']:.2f}₽\n"
+                orders_text += f"Дата: {order['created_at']}\n\n"
+            
+            await query.edit_message_text(
+                orders_text,
+                reply_markup=orders_keyboard
+            )
+        else:
+            await query.answer("❌ Заказы не найдены!", show_alert=True)
+        return
+    
+    elif callback_data.startswith("cabinet_order_"):
+        # Детали конкретного заказа
+        order_id = int(callback_data.split("_")[-1])
+        order = database.get_order(order_id)
+        
+        if order and order['user_id'] == user_id:
+            order_items = database.get_order_items(order_id)
+            session = database.get_session(order['session_id'])
+            
+            items_text = "\n".join([
+                f"• {item['product_name']} x{item['quantity']} = {item['quantity'] * item['price']:.2f}₽"
+                for item in order_items
+            ])
+            
+            from keyboards.cabinet import get_cart_orders_keyboard
+            pending_orders = database.get_user_pending_orders(user_id)
+            session_orders = [o for o in pending_orders if o['session_id'] == order['session_id']]
+            back_keyboard = get_cart_orders_keyboard(order['session_id'], session_orders)
+            
+            await query.edit_message_text(
+                f"📋 Заказ #{order['order_number']}\n\n"
+                f"📦 Сессия: {session['session_name'] if session else 'Не найдена'}\n"
+                f"👤 ФИО: {order['full_name']}\n"
+                f"📱 Телефон: {order['phone_number']}\n"
+                f"📊 Статус: {database.get_order_status_ru(order['status'])}\n"
+                f"📅 Дата: {order['created_at']}\n\n"
+                f"Товары:\n{items_text}\n\n"
+                f"💰 Общая сумма: {order['total_amount']:.2f}₽",
+                reply_markup=back_keyboard
+            )
+        else:
+            await query.answer("❌ Заказ не найден!", show_alert=True)
+        return
+    
     # Обработка пользовательских действий (не требуют прав администратора)
     if callback_data.startswith("session_"):
         # Обработка выбора сессии пользователем

@@ -1256,3 +1256,117 @@ def get_user_cart(user_id: int, session_id: int) -> list:
         }
         for order in orders
     ]
+
+
+def get_user_all_orders(user_id: int) -> list:
+    """Получает все заказы пользователя по всем сессиям"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT o.order_id, o.order_number, o.session_id, o.total_amount, o.status, o.created_at,
+               s.session_name,
+               GROUP_CONCAT(p.product_name || ' x' || oi.quantity || ' (' || oi.price || '₽)') as items
+        FROM orders o
+        LEFT JOIN sessions s ON o.session_id = s.session_id
+        LEFT JOIN order_items oi ON o.order_id = oi.order_id
+        LEFT JOIN products p ON oi.product_id = p.product_id
+        WHERE o.user_id = ?
+        GROUP BY o.order_id
+        ORDER BY o.created_at DESC
+    """, (user_id,))
+    orders = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "order_id": order[0],
+            "order_number": order[1],
+            "session_id": order[2],
+            "total_amount": order[3],
+            "status": order[4],
+            "created_at": order[5],
+            "session_name": order[6] or "Неизвестная сессия",
+            "items": order[7] or "Нет товаров"
+        }
+        for order in orders
+    ]
+
+
+def get_user_pending_orders(user_id: int) -> list:
+    """Получает все незавершенные заказы пользователя по всем сессиям"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT o.order_id, o.order_number, o.session_id, o.total_amount, o.status, o.created_at,
+               s.session_name,
+               GROUP_CONCAT(p.product_name || ' x' || oi.quantity || ' (' || oi.price || '₽)') as items
+        FROM orders o
+        LEFT JOIN sessions s ON o.session_id = s.session_id
+        LEFT JOIN order_items oi ON o.order_id = oi.order_id
+        LEFT JOIN products p ON oi.product_id = p.product_id
+        WHERE o.user_id = ? AND o.status != 'completed' AND o.status != 'cancelled'
+        GROUP BY o.order_id
+        ORDER BY o.created_at DESC
+    """, (user_id,))
+    orders = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "order_id": order[0],
+            "order_number": order[1],
+            "session_id": order[2],
+            "total_amount": order[3],
+            "status": order[4],
+            "created_at": order[5],
+            "session_name": order[6] or "Неизвестная сессия",
+            "items": order[7] or "Нет товаров"
+        }
+        for order in orders
+    ]
+
+
+def get_user_statistics(user_id: int) -> dict:
+    """Получает статистику пользователя"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    # Общее количество купленных ящиков (только выданные заказы)
+    cursor.execute("""
+        SELECT COALESCE(SUM(oi.quantity), 0)
+        FROM orders o
+        JOIN order_items oi ON o.order_id = oi.order_id
+        WHERE o.user_id = ? AND o.status = 'completed'
+    """, (user_id,))
+    total_boxes = cursor.fetchone()[0] or 0
+    
+    # Общая сумма выданных заказов
+    cursor.execute("""
+        SELECT COALESCE(SUM(total_amount), 0)
+        FROM orders
+        WHERE user_id = ? AND status = 'completed'
+    """, (user_id,))
+    total_amount = cursor.fetchone()[0] or 0
+    
+    # Количество выданных заказов
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM orders
+        WHERE user_id = ? AND status = 'completed'
+    """, (user_id,))
+    completed_orders = cursor.fetchone()[0] or 0
+    
+    # Количество незавершенных заказов
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM orders
+        WHERE user_id = ? AND status != 'completed' AND status != 'cancelled'
+    """, (user_id,))
+    pending_orders = cursor.fetchone()[0] or 0
+    
+    conn.close()
+    
+    return {
+        "total_boxes": total_boxes,
+        "total_amount": total_amount,
+        "completed_orders": completed_orders,
+        "pending_orders": pending_orders
+    }

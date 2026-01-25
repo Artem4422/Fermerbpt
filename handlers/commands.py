@@ -11,14 +11,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Сохраняем всю информацию о пользователе в базу данных
     database.save_or_update_user(user, chat_id)
     
-    # Получаем список сессий
-    from keyboards.sessions import get_sessions_keyboard
-    sessions_keyboard = get_sessions_keyboard()
+    # Получаем главную клавиатуру
+    from keyboards.main import get_main_keyboard
+    main_keyboard = get_main_keyboard()
     
-    # Отправляем приветствие с кнопками сессий
+    # Отправляем приветствие с главной клавиатурой
     await update.message.reply_text(
         "Привет, я бот-фермер, готов помочь тебе!",
-        reply_markup=sessions_keyboard
+        reply_markup=main_keyboard
     )
 
 

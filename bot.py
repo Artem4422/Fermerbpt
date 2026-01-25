@@ -37,6 +37,10 @@ def main() -> None:
     # Регистрируем обработчик фото (для сканирования QR-кодов)
     application.add_handler(MessageHandler(filters.PHOTO, messages.handle_photo))
     
+    # Регистрируем обработчики для главного меню и личного кабинета
+    application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^main_"))
+    application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^cabinet_"))
+    
     # Регистрируем обработчик callback для сессий
     application.add_handler(CallbackQueryHandler(callbacks.handle_admin_callback, pattern="^session_"))
     
