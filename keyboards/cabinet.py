@@ -5,6 +5,7 @@ import database
 def get_cabinet_keyboard() -> InlineKeyboardMarkup:
     """Создает клавиатуру личного кабинета"""
     keyboard = [
+        [InlineKeyboardButton("✏️ Изменить телефон и ФИО", callback_data="cabinet_edit_profile")],
         [InlineKeyboardButton("🛒 Корзина", callback_data="cabinet_cart")],
         [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
     ]

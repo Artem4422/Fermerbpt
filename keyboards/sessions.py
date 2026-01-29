@@ -3,15 +3,11 @@ import database
 
 
 def get_sessions_keyboard() -> InlineKeyboardMarkup:
-    """Создает клавиатуру с кнопками сессий"""
+    """Создает клавиатуру с кнопками сессий. Всегда есть кнопка «В начало» внизу."""
     sessions = database.get_all_sessions()
     
-    if not sessions:
-        # Если сессий нет, возвращаем пустую клавиатуру
-        return InlineKeyboardMarkup([])
-    
     keyboard = []
-    # Создаем кнопки по 2 в ряд
+    # Кнопки сессий по 2 в ряд
     for i in range(0, len(sessions), 2):
         row = []
         row.append(InlineKeyboardButton(
@@ -24,5 +20,7 @@ def get_sessions_keyboard() -> InlineKeyboardMarkup:
                 callback_data=f"session_{sessions[i + 1]['session_id']}"
             ))
         keyboard.append(row)
+    # Всегда кнопка «В начало» внизу
+    keyboard.append([InlineKeyboardButton("🔙 В начало", callback_data="main_menu")])
     
     return InlineKeyboardMarkup(keyboard)

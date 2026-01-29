@@ -11,14 +11,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Сохраняем всю информацию о пользователе в базу данных
     database.save_or_update_user(user, chat_id)
     
-    # Получаем главную клавиатуру
-    from keyboards.main import get_main_keyboard
-    main_keyboard = get_main_keyboard()
+    # Админы и менеджеры не проходят регистрацию
+    if database.is_admin(user.id) or database.is_manager(user.id):
+        from keyboards.main import get_main_keyboard
+        await update.message.reply_text(
+            "Привет, я бот-фермер, готов помочь тебе!",
+            reply_markup=get_main_keyboard()
+        )
+        return
     
-    # Отправляем приветствие с главной клавиатурой
+    # Проверяем, зарегистрирован ли пользователь (есть ли телефон)
+    if not database.is_registered(user.id):
+        context.user_data['registering'] = {'step': 'phone'}
+        await update.message.reply_text(
+            "👋 Добро пожаловать!\n\n"
+            "Для использования бота нужно пройти регистрацию.\n\n"
+            "📱 Введите ваш номер телефона (например: +79991234567):"
+        )
+        return
+    
+    # Уже зарегистрирован — показываем главное меню
+    from keyboards.main import get_main_keyboard
     await update.message.reply_text(
         "Привет, я бот-фермер, готов помочь тебе!",
-        reply_markup=main_keyboard
+        reply_markup=get_main_keyboard()
     )
 
 

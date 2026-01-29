@@ -43,16 +43,25 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     elif callback_data == "main_buy":
-        # Переход к покупкам - показываем список сессий
+        # Переход к покупкам — нужна регистрация (телефон в профиле)
+        if not database.is_admin(user_id) and not database.is_manager(user_id) and not database.is_registered(user_id):
+            await query.answer("❌ Сначала пройдите регистрацию: /start", show_alert=True)
+            return
+        # Показываем список сессий
         from keyboards.sessions import get_sessions_keyboard
         sessions_keyboard = get_sessions_keyboard()
         sessions = database.get_all_sessions()
         
         if sessions:
-            sessions_text = "\n".join([
-                f"• {s['session_name']}"
-                for s in sessions
-            ])
+            lines = []
+            for s in sessions:
+                name = s.get("session_name", "")
+                desc = (s.get("description") or "").strip()
+                if desc:
+                    lines.append(f"• {name}\n  {desc}")
+                else:
+                    lines.append(f"• {name}")
+            sessions_text = "\n\n".join(lines)
             await query.edit_message_text(
                 f"🛒 Выберите сессию для покупки:\n\n{sessions_text}",
                 reply_markup=sessions_keyboard
@@ -65,11 +74,25 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     elif callback_data == "main_cabinet":
-        # Личный кабинет
+        # Личный кабинет — для незарегистрированных показываем предложение зарегистрироваться
+        if not database.is_admin(user_id) and not database.is_manager(user_id) and not database.is_registered(user_id):
+            from keyboards.main import get_back_to_start_keyboard
+            await query.edit_message_text(
+                "👤 Личный кабинет\n\n"
+                "Для входа в личный кабинет нужно пройти регистрацию.\n\n"
+                "Нажмите /start и введите номер телефона и ФИО.",
+                reply_markup=get_back_to_start_keyboard()
+            )
+            return
         from keyboards.cabinet import get_cabinet_keyboard
         stats = database.get_user_statistics(user_id)
+        info = database.get_user_info(user_id)
+        phone = (info or {}).get('phone_number') or '—'
+        full_name = (info or {}).get('full_name') or '—'
         await query.edit_message_text(
             f"👤 Личный кабинет\n\n"
+            f"📱 Телефон: {phone}\n"
+            f"👤 ФИО: {full_name}\n\n"
             f"📊 Статистика:\n"
             f"• Куплено ящиков: {stats['total_boxes']}\n"
             f"• Выдано заказов: {stats['completed_orders']}\n"
@@ -77,6 +100,15 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             f"• Общая сумма: {stats['total_amount']:.2f}₽\n\n"
             f"Выберите действие:",
             reply_markup=get_cabinet_keyboard()
+        )
+        return
+    
+    elif callback_data == "cabinet_edit_profile":
+        # Редактирование телефона и ФИО
+        context.user_data['editing_profile'] = {'step': 'phone'}
+        await query.edit_message_text(
+            "✏️ Изменение контактов\n\n"
+            "📱 Введите новый номер телефона (например: +79991234567):"
         )
         return
     
@@ -194,11 +226,13 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         if session:
             # Проверяем статус торговли для этой сессии
             if not database.is_session_trading_active(session_id):
-                await query.edit_message_text(
-                    f"⛔ Торговля закрыта\n\n"
-                    f"Сессия: {session['session_name']}\n\n"
-                    f"Торговля для этой сессии временно приостановлена. Попробуйте позже."
-                )
+                from keyboards.main import get_back_to_start_keyboard
+                desc = (session.get("description") or "").strip()
+                msg = f"⛔ Торговля закрыта\n\nСессия: {session['session_name']}"
+                if desc:
+                    msg += f"\n\n📄 {desc}"
+                msg += "\n\nТорговля для этой сессии временно приостановлена. Попробуйте позже."
+                await query.edit_message_text(msg, reply_markup=get_back_to_start_keyboard())
                 return
             
             # Получаем товары для этой сессии
@@ -206,20 +240,23 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             products_keyboard = get_products_keyboard(session_id)
             products = database.get_products_by_session(session_id)
             
+            desc = (session.get("description") or "").strip()
+            session_header = f"✅ Вы выбрали сессию: {session['session_name']}"
+            if desc:
+                session_header += f"\n\n📄 {desc}"
+            session_header += "\n\n"
             if products:
                 products_text = "\n".join([
                     f"• {p['product_name']} - {p['price']}₽ (ящиков: {p['boxes_count']})"
                     for p in products
                 ])
                 await query.edit_message_text(
-                    f"✅ Вы выбрали сессию: {session['session_name']}\n\n"
-                    f"Доступные товары:\n{products_text}",
+                    f"{session_header}Доступные товары:\n{products_text}",
                     reply_markup=products_keyboard
                 )
             else:
                 await query.edit_message_text(
-                    f"✅ Вы выбрали сессию: {session['session_name']}\n\n"
-                    f"Товары пока не добавлены.",
+                    f"{session_header}Товары пока не добавлены.",
                     reply_markup=products_keyboard
                 )
         else:
@@ -237,7 +274,13 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             
             # Проверяем статус торговли
             if not database.is_session_trading_active(session_id):
-                await query.answer("⛔ Торговля для этой сессии закрыта!", show_alert=True)
+                from keyboards.main import get_back_to_start_keyboard
+                await query.edit_message_text(
+                    f"⛔ Торговля закрыта\n\n"
+                    f"Сессия: {session['session_name'] if session else ''}\n\n"
+                    f"Торговля для этой сессии временно приостановлена. Попробуйте позже.",
+                    reply_markup=get_back_to_start_keyboard()
+                )
                 return
             
             # Получаем лимит и доступное количество
@@ -271,11 +314,26 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         
         if product:
             session_id = product['session_id']
+            # Торговля должна быть открыта
+            if not database.is_session_trading_active(session_id):
+                from keyboards.main import get_back_to_start_keyboard
+                session = database.get_session(session_id)
+                await query.edit_message_text(
+                    f"⛔ Торговля закрыта\n\n"
+                    f"Сессия: {session['session_name'] if session else ''}\n\n"
+                    f"Торговля для этой сессии временно приостановлена.",
+                    reply_markup=get_back_to_start_keyboard()
+                )
+                return
             available = database.get_user_available_boxes(user_id, session_id, product_id)
             max_boxes = available
             
             if max_boxes <= 0:
-                await query.answer("❌ Нет доступных ящиков для покупки!", show_alert=True)
+                from keyboards.products import get_product_info_keyboard
+                await query.edit_message_text(
+                    "❌ Нет доступных ящиков для покупки по этому товару.",
+                    reply_markup=get_product_info_keyboard(product_id, session_id)
+                )
                 return
             
             from keyboards.products import get_quantity_keyboard
@@ -289,7 +347,11 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 reply_markup=keyboard
             )
         else:
-            await query.answer("❌ Товар не найден!", show_alert=True)
+            from keyboards.main import get_back_to_start_keyboard
+            await query.edit_message_text(
+                "❌ Товар не найден.",
+                reply_markup=get_back_to_start_keyboard()
+            )
         return
     
     elif callback_data.startswith("qty_"):
@@ -321,6 +383,11 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             
             from keyboards.products import get_confirm_phone_keyboard
             keyboard = get_confirm_phone_keyboard(product_id, quantity)
+            info = database.get_user_info(user_id)
+            if (info or {}).get('phone_number') and (info or {}).get('full_name'):
+                hint = "Телефон и ФИО будут взяты из вашего профиля. Нажмите кнопку для оформления заказа."
+            else:
+                hint = "Для продолжения введите или подтвердите номер телефона и ФИО:"
             
             await query.edit_message_text(
                 f"🛒 Подтверждение покупки\n\n"
@@ -328,7 +395,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 f"Количество: {quantity} ящиков\n"
                 f"Цена за ящик: {product['price']}₽\n"
                 f"💰 Общая стоимость: {total_cost}₽\n\n"
-                f"Для продолжения подтвердите номер телефона:",
+                f"{hint}",
                 reply_markup=keyboard
             )
         else:
@@ -336,7 +403,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     elif callback_data.startswith("confirm_phone_"):
-        # Подтверждение телефона
+        # Подтверждение заказа: используем телефон и ФИО из профиля, если есть
         parts = callback_data.split("_")
         product_id = int(parts[2])
         quantity = int(parts[3])
@@ -345,11 +412,81 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.answer("❌ Ошибка! Начните покупку заново.", show_alert=True)
             return
         
-        # Запрашиваем номер телефона
+        purchase_data = context.user_data['purchase']
+        info = database.get_user_info(user_id)
+        profile_phone = (info or {}).get('phone_number') or ''
+        profile_full_name = (info or {}).get('full_name') or ''
+        
+        # Если в профиле есть и телефон, и ФИО — создаём заказ сразу
+        if profile_phone and profile_full_name:
+            order_id = database.create_order(
+                user_id=user_id,
+                session_id=purchase_data['session_id'],
+                phone_number=profile_phone,
+                full_name=profile_full_name,
+                items=[{
+                    'product_id': purchase_data['product_id'],
+                    'quantity': purchase_data['quantity'],
+                    'price': purchase_data['price']
+                }]
+            )
+            if order_id:
+                order = database.get_order(order_id)
+                order_items = database.get_order_items(order_id)
+                session = database.get_session(purchase_data['session_id'])
+                limit = database.get_limit_per_person()
+                purchased = database.get_user_session_boxes_purchased(user_id, purchase_data['session_id'])
+                available = limit - purchased if limit > 0 else 999999
+                items_text = "\n".join([
+                    f"• {item['product_name']} x{item['quantity']} = {item['quantity'] * item['price']}₽"
+                    for item in order_items
+                ])
+                continue_text = ""
+                back_keyboard = None
+                if limit == 0 or available > 0:
+                    if limit > 0:
+                        continue_text = f"\n\n✅ У вас осталось {available} ящиков для покупки в этой сессии."
+                    else:
+                        continue_text = "\n\n✅ Вы можете продолжить покупки в этой сессии."
+                    from keyboards.orders import get_back_to_products_keyboard
+                    back_keyboard = get_back_to_products_keyboard(purchase_data['session_id'])
+                from keyboards.products import get_products_keyboard
+                products_keyboard = get_products_keyboard(purchase_data['session_id'])
+                import qr_code
+                qr_image = qr_code.generate_qr_code(order['order_number'])
+                await query.message.reply_photo(
+                    photo=qr_image,
+                    caption=(
+                        f"✅ Заказ успешно создан!\n\n"
+                        f"📋 Номер заказа: #{order['order_number']}\n"
+                        f"📦 Сессия: {session['session_name']}\n"
+                        f"👤 ФИО: {order['full_name']}\n"
+                        f"📱 Телефон: {order['phone_number']}\n\n"
+                        f"Товары:\n{items_text}\n\n"
+                        f"💰 Общая сумма: {order['total_amount']}₽{continue_text}"
+                    ),
+                    reply_markup=back_keyboard if back_keyboard else products_keyboard
+                )
+                await query.edit_message_text("✅ Заказ создан. QR-код отправлен выше.")
+                context.user_data.pop('purchase', None)
+            else:
+                await query.answer("❌ Ошибка при создании заказа.", show_alert=True)
+            return
+        
+        # Нет ФИО — запрашиваем только ФИО (телефон уже в профиле)
+        if profile_phone:
+            context.user_data['purchase']['step'] = 'full_name'
+            context.user_data['purchase']['phone_number'] = profile_phone
+            await query.edit_message_text(
+                f"📱 Телефон из профиля: {profile_phone}\n\n"
+                "Введите ваше ФИО (Фамилия Имя Отчество):"
+            )
+            return
+        
+        # Нет телефона в профиле — запрашиваем телефон и затем ФИО
         context.user_data['purchase']['step'] = 'phone'
         await query.edit_message_text(
-            "📱 Подтверждение номера телефона\n\n"
-            "Пожалуйста, отправьте ваш номер телефона текстом (например: +79991234567):"
+            "📱 Введите ваш номер телефона (например: +79991234567):"
         )
         return
     
@@ -984,14 +1121,41 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(f"❌ Ошибка при удалении менеджера!")
     
     elif callback_data == "admin_reports":
+        # Показываем выбор типа отчета
+        from keyboards.reports import get_reports_type_keyboard
+        reports_keyboard = get_reports_type_keyboard()
+        await query.edit_message_text(
+            "📈 Отчеты\n\n"
+            "Выберите тип отчета:",
+            reply_markup=reports_keyboard
+        )
+    
+    elif callback_data == "admin_report_period":
         # Показываем выбор периода для отчета
         from keyboards.reports import get_reports_period_keyboard
         reports_keyboard = get_reports_period_keyboard()
         await query.edit_message_text(
-            "📈 Отчеты\n\n"
+            "📅 Отчет за период\n\n"
             "Выберите период для формирования отчета:",
             reply_markup=reports_keyboard
         )
+    
+    elif callback_data == "admin_report_session":
+        # Выбор сессии для отчета (такой же как у менеджера)
+        from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+        sessions_keyboard = get_sessions_keyboard_for_admin("report", back_callback="admin_reports")
+        try:
+            await query.edit_message_text(
+                "📊 Отчет по сессии\n\n"
+                "Выберите сессию для формирования отчета:",
+                reply_markup=sessions_keyboard
+            )
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                # Игнорируем ошибку если сообщение не изменилось
+                pass
+            else:
+                raise
     
     elif callback_data.startswith("admin_report_"):
         # Обработка выбора периода отчета

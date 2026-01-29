@@ -2,7 +2,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 import database
 
 
-def get_sessions_keyboard_for_admin(action: str = "select") -> InlineKeyboardMarkup:
+def get_sessions_keyboard_for_admin(action: str = "select", back_callback: str = None) -> InlineKeyboardMarkup:
     """Создает клавиатуру с кнопками сессий для администратора"""
     # Всегда показываем все сессии
     sessions = database.get_all_sessions()
@@ -33,7 +33,9 @@ def get_sessions_keyboard_for_admin(action: str = "select") -> InlineKeyboardMar
         keyboard.append(row)
     
     # Добавляем кнопку "Назад"
-    if action == "report":
+    if back_callback:
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=back_callback)])
+    elif action == "report":
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="manager_back")])
     else:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_back")])

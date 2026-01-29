@@ -8,3 +8,10 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("👤 Личный кабинет", callback_data="main_cabinet")]
     ]
     return InlineKeyboardMarkup(keyboard)
+
+
+def get_back_to_start_keyboard() -> InlineKeyboardMarkup:
+    """Кнопка «В начало» — всегда внизу, когда торговля закрыта или нет контента"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 В начало", callback_data="main_menu")]
+    ])

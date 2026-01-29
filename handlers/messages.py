@@ -8,30 +8,138 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Обработчик текстовых сообщений"""
     user_id = update.effective_user.id
     
-    # Проверяем, ожидаем ли мы имя сессии от администратора
+    # Регистрация: телефон и ФИО
+    if context.user_data.get('registering'):
+        reg = context.user_data['registering']
+        step = reg.get('step')
+        text = update.message.text.strip()
+        
+        if step == 'phone':
+            if len(text) > 0:
+                reg['phone_number'] = text
+                reg['step'] = 'full_name'
+                await update.message.reply_text(
+                    f"✅ Номер телефона сохранён.\n\n"
+                    f"Введите ваше ФИО (Фамилия Имя Отчество):"
+                )
+            else:
+                await update.message.reply_text("❌ Введите номер телефона.")
+            return
+        
+        if step == 'full_name':
+            if len(text) > 0:
+                database.update_user_profile(
+                    user_id,
+                    phone_number=reg.get('phone_number'),
+                    full_name=text
+                )
+                context.user_data.pop('registering', None)
+                from keyboards.main import get_main_keyboard
+                await update.message.reply_text(
+                    "✅ Регистрация завершена! Теперь вы можете пользоваться ботом.",
+                    reply_markup=get_main_keyboard()
+                )
+            else:
+                await update.message.reply_text("❌ Введите ФИО.")
+            return
+    
+    # Редактирование профиля (телефон и ФИО) из личного кабинета
+    if context.user_data.get('editing_profile'):
+        ed = context.user_data['editing_profile']
+        step = ed.get('step')
+        text = update.message.text.strip()
+        
+        if step == 'phone':
+            if len(text) > 0:
+                ed['phone_number'] = text
+                ed['step'] = 'full_name'
+                await update.message.reply_text(
+                    "✅ Телефон сохранён.\n\nВведите ваше ФИО (Фамилия Имя Отчество):"
+                )
+            else:
+                await update.message.reply_text("❌ Введите номер телефона.")
+            return
+        
+        if step == 'full_name':
+            if len(text) > 0:
+                database.update_user_profile(
+                    user_id,
+                    phone_number=ed.get('phone_number'),
+                    full_name=text
+                )
+                context.user_data.pop('editing_profile', None)
+                stats = database.get_user_statistics(user_id)
+                info = database.get_user_info(user_id)
+                phone = (info or {}).get('phone_number') or '—'
+                full_name_display = (info or {}).get('full_name') or '—'
+                from keyboards.cabinet import get_cabinet_keyboard
+                await update.message.reply_text(
+                    f"✅ Контакты обновлены!\n\n"
+                    f"👤 Личный кабинет\n\n"
+                    f"📱 Телефон: {phone}\n"
+                    f"👤 ФИО: {full_name_display}\n\n"
+                    f"📊 Статистика:\n"
+                    f"• Куплено ящиков: {stats['total_boxes']}\n"
+                    f"• Выдано заказов: {stats['completed_orders']}\n"
+                    f"• Ожидает обработки: {stats['pending_orders']}\n"
+                    f"• Общая сумма: {stats['total_amount']:.2f}₽",
+                    reply_markup=get_cabinet_keyboard()
+                )
+            else:
+                await update.message.reply_text("❌ Введите ФИО.")
+            return
+    
+    # Проверяем, ожидаем ли мы имя сессии от администратора (шаг 1)
     if context.user_data.get('waiting_for_session_name'):
         if database.is_admin(user_id):
             session_name = update.message.text.strip()
-            
             if len(session_name) > 0:
-                session_id = database.add_session(session_name, user_id)
-                if session_id:
-                    context.user_data['waiting_for_session_name'] = False
-                    await update.message.reply_text(
-                        f"✅ Сессия '{session_name}' успешно создана!"
-                    )
-                else:
-                    await update.message.reply_text(
-                        "❌ Ошибка при создании сессии. Возможно, сессия с таким именем уже существует."
-                    )
+                context.user_data['waiting_for_session_name'] = False
+                context.user_data['creating_session'] = {'session_name': session_name}
+                context.user_data['waiting_for_session_description'] = True
+                await update.message.reply_text(
+                    f"✅ Имя сессии: {session_name}\n\n"
+                    "Введите описание сессии (можно ссылку или текст; при необходимости оставьте пустым и отправьте «-»):"
+                )
             else:
                 await update.message.reply_text("❌ Имя сессии не может быть пустым!")
         else:
             context.user_data['waiting_for_session_name'] = False
             await update.message.reply_text("❌ У вас нет прав для создания сессии!")
-    
+        return
+
+    # Ожидаем описание сессии от администратора (шаг 2)
+    if context.user_data.get('waiting_for_session_description'):
+        if database.is_admin(user_id):
+            creating = context.user_data.get('creating_session', {})
+            session_name = creating.get('session_name', '')
+            if not session_name:
+                context.user_data.pop('waiting_for_session_description', None)
+                context.user_data.pop('creating_session', None)
+                await update.message.reply_text("❌ Сессия не создана: имя потеряно. Начните заново из админ-панели.")
+                return
+            raw = update.message.text.strip()
+            description = "" if raw == "-" or not raw else raw
+            context.user_data.pop('waiting_for_session_description', None)
+            context.user_data.pop('creating_session', None)
+            session_id = database.add_session(session_name, user_id, description)
+            if session_id:
+                desc_preview = f"\nОписание: {description}" if description else ""
+                await update.message.reply_text(
+                    f"✅ Сессия «{session_name}» успешно создана!{desc_preview}"
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Ошибка при создании сессии. Возможно, сессия с таким именем уже существует."
+                )
+        else:
+            context.user_data.pop('waiting_for_session_description', None)
+            context.user_data.pop('creating_session', None)
+            await update.message.reply_text("❌ У вас нет прав для создания сессии!")
+        return
+
     # Обработка добавления товара
-    elif context.user_data.get('adding_product'):
+    if context.user_data.get('adding_product'):
         if not database.is_admin(user_id):
             context.user_data.pop('adding_product', None)
             await update.message.reply_text("❌ У вас нет прав для добавления товара!")
@@ -144,6 +252,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Сохраняем ФИО и создаем заказ
             if len(text) > 0:
                 purchase_data['full_name'] = text
+                # Сохраняем телефон и ФИО в профиль для следующих покупок
+                database.update_user_profile(
+                    user_id,
+                    phone_number=purchase_data.get('phone_number'),
+                    full_name=text
+                )
                 
                 # Создаем заказ
                 order_id = database.create_order(

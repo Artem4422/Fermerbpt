@@ -45,6 +45,7 @@
 ЯЧЕЙКИ:
 - session_id (INTEGER PRIMARY KEY AUTOINCREMENT) - Уникальный идентификатор сессии
 - session_name (TEXT NOT NULL UNIQUE) - Название сессии (уникальное)
+- description (TEXT DEFAULT '') - Описание сессии; может быть текст или ссылка; показывается пользователю при выборе сессии
 - is_active (INTEGER DEFAULT 0) - Статус торговли для сессии (0 - торговля остановлена, 1 - торговля активна)
 - created_at (TIMESTAMP DEFAULT CURRENT_TIMESTAMP) - Дата и время создания сессии
 - created_by (INTEGER) - ID администратора, создавшего сессию (связь с таблицей users)

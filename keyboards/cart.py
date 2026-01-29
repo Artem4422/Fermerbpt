@@ -11,7 +11,7 @@ def get_order_qr_keyboard(order_number: str) -> InlineKeyboardMarkup:
 
 
 def get_cart_orders_keyboard(session_id: int, orders: list) -> InlineKeyboardMarkup:
-    """Создает клавиатуру с заказами в корзине и их QR-кодами"""
+    """Создает клавиатуру с заказами в корзине. Всегда есть «В начало» внизу."""
     keyboard = []
     for order in orders:
         keyboard.append([
@@ -22,4 +22,5 @@ def get_cart_orders_keyboard(session_id: int, orders: list) -> InlineKeyboardMar
         ])
     
     keyboard.append([InlineKeyboardButton("🔙 Назад к товарам", callback_data=f"session_{session_id}")])
+    keyboard.append([InlineKeyboardButton("🔙 В начало", callback_data="main_menu")])
     return InlineKeyboardMarkup(keyboard)

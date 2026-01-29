@@ -65,6 +65,11 @@ def init_database():
         cursor.execute("ALTER TABLE sessions ADD COLUMN is_active INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass  # Поле уже существует
+    # Добавляем поле description для сессии (название + описание/ссылка)
+    try:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN description TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass  # Поле уже существует
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS products (
@@ -126,6 +131,13 @@ def init_database():
             FOREIGN KEY (session_id) REFERENCES sessions(session_id)
         )
     """)
+    
+    # Добавляем phone_number и full_name в users, если их ещё нет
+    for col in ('phone_number', 'full_name'):
+        try:
+            cursor.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT")
+        except sqlite3.OperationalError:
+            pass
     
     # Инициализируем лимит на человека значением по умолчанию, если его нет
     cursor.execute("SELECT setting_key FROM settings WHERE setting_key = 'limit_per_person'")
@@ -225,10 +237,54 @@ def get_user_info(user_id: int) -> Optional[dict]:
             'user_id', 'username', 'first_name', 'last_name', 'language_code',
             'is_bot', 'is_premium', 'added_to_attachment_menu',
             'can_join_groups', 'can_read_all_group_messages',
-            'supports_inline_queries', 'chat_id', 'first_seen', 'last_seen', 'total_messages'
+            'supports_inline_queries', 'chat_id', 'first_seen', 'last_seen', 'total_messages',
+            'phone_number', 'full_name'
         ]
-        return dict(zip(columns, row))
+        # Учитываем случай, когда в БД ещё нет колонок phone_number, full_name
+        result = dict(zip(columns[:len(row)], row))
+        if 'phone_number' not in result:
+            result['phone_number'] = None
+        if 'full_name' not in result:
+            result['full_name'] = None
+        return result
     return None
+
+
+def update_user_profile(user_id: int, phone_number: Optional[str] = None, full_name: Optional[str] = None) -> bool:
+    """Обновляет телефон и/или ФИО пользователя в профиле"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        if phone_number is not None and full_name is not None:
+            cursor.execute(
+                "UPDATE users SET phone_number = ?, full_name = ? WHERE user_id = ?",
+                (phone_number, full_name, user_id)
+            )
+        elif phone_number is not None:
+            cursor.execute(
+                "UPDATE users SET phone_number = ? WHERE user_id = ?",
+                (phone_number, user_id)
+            )
+        elif full_name is not None:
+            cursor.execute(
+                "UPDATE users SET full_name = ? WHERE user_id = ?",
+                (full_name, user_id)
+            )
+        else:
+            conn.close()
+            return False
+        conn.commit()
+        conn.close()
+        return True
+    except Exception:
+        conn.close()
+        return False
+
+
+def is_registered(user_id: int) -> bool:
+    """Проверяет, зарегистрирован ли пользователь (указан ли телефон)"""
+    info = get_user_info(user_id)
+    return bool(info and info.get('phone_number'))
 
 
 def is_admin(user_id: int) -> bool:
@@ -303,15 +359,15 @@ def remove_manager(user_id: int) -> bool:
     return success
 
 
-def add_session(session_name: str, created_by: int) -> Optional[int]:
-    """Добавляет новую сессию"""
+def add_session(session_name: str, created_by: int, description: str = "") -> Optional[int]:
+    """Добавляет новую сессию (имя и описание; описание может быть ссылкой)."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            INSERT INTO sessions (session_name, created_by)
-            VALUES (?, ?)
-        """, (session_name, created_by))
+            INSERT INTO sessions (session_name, description, created_by)
+            VALUES (?, ?, ?)
+        """, (session_name, description or "", created_by))
         conn.commit()
         session_id = cursor.lastrowid
         conn.close()
@@ -327,23 +383,23 @@ def add_session(session_name: str, created_by: int) -> Optional[int]:
 
 
 def get_all_sessions() -> list:
-    """Получает список всех сессий"""
+    """Получает список всех сессий (с полем description)."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT session_id, session_name FROM sessions ORDER BY created_at DESC")
+    cursor.execute("SELECT session_id, session_name, COALESCE(description, '') FROM sessions ORDER BY created_at DESC")
     sessions = cursor.fetchall()
     conn.close()
-    return [{"session_id": s[0], "session_name": s[1]} for s in sessions]
+    return [{"session_id": s[0], "session_name": s[1], "description": s[2] or ""} for s in sessions]
 
 
 def get_active_sessions() -> list:
-    """Получает список активных сессий"""
+    """Получает список активных сессий (с полем description)."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT session_id, session_name FROM sessions WHERE is_active = 1 ORDER BY created_at DESC")
+    cursor.execute("SELECT session_id, session_name, COALESCE(description, '') FROM sessions WHERE is_active = 1 ORDER BY created_at DESC")
     sessions = cursor.fetchall()
     conn.close()
-    return [{"session_id": s[0], "session_name": s[1]} for s in sessions]
+    return [{"session_id": s[0], "session_name": s[1], "description": s[2] or ""} for s in sessions]
 
 
 def delete_session(session_id: int) -> bool:
@@ -384,10 +440,10 @@ def delete_session(session_id: int) -> bool:
 
 
 def get_session(session_id: int) -> Optional[dict]:
-    """Получает информацию о сессии"""
+    """Получает информацию о сессии (включая description)."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT session_id, session_name, is_active, created_at FROM sessions WHERE session_id = ?", (session_id,))
+    cursor.execute("SELECT session_id, session_name, is_active, created_at, COALESCE(description, '') FROM sessions WHERE session_id = ?", (session_id,))
     row = cursor.fetchone()
     conn.close()
     if row:
@@ -395,7 +451,8 @@ def get_session(session_id: int) -> Optional[dict]:
             "session_id": row[0],
             "session_name": row[1],
             "is_active": bool(row[2]),
-            "created_at": row[3]
+            "created_at": row[3],
+            "description": row[4] or ""
         }
     return None
 
