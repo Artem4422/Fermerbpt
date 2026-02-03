@@ -18,6 +18,28 @@ def get_sessions_keyboard_for_admin(action: str = "select", back_callback: str =
         # Для отчета используем специальный callback
         if action == "report":
             callback_prefix = "admin_select_session_report_"
+        elif action == "channel_report":
+            callback_prefix = "admin_select_session_channel_report_"
+        elif action == "full_data_report":
+            callback_prefix = "admin_select_session_full_data_report_"
+        elif action == "sales_status":
+            callback_prefix = "admin_select_session_sales_status_"
+        elif action == "manager_report":
+            callback_prefix = "manager_select_session_report_"
+        elif action == "manager_channel_report":
+            callback_prefix = "manager_select_session_channel_report_"
+        elif action == "manager_full_data_report":
+            callback_prefix = "manager_select_session_full_data_report_"
+        elif action == "bulk_complete":
+            callback_prefix = "admin_select_session_bulk_complete_"
+        elif action == "find_order":
+            callback_prefix = "admin_select_session_find_order_"
+        elif action == "pending_table":
+            callback_prefix = "admin_select_session_pending_table_"
+        elif action == "notify_pending":
+            callback_prefix = "admin_select_session_notify_pending_"
+        elif action == "notify_active":
+            callback_prefix = "admin_select_session_notify_active_"
         else:
             callback_prefix = f"admin_select_session_{action}_"
         

@@ -5,7 +5,10 @@ def get_manager_keyboard() -> InlineKeyboardMarkup:
     """Создает клавиатуру панели менеджера"""
     keyboard = [
         [InlineKeyboardButton("🔍 Найти", callback_data="manager_find_order")],
-        [InlineKeyboardButton("📊 Отчет", callback_data="manager_report")]
+        [InlineKeyboardButton("📦 Выдача оптом", callback_data="manager_bulk_complete")],
+        [InlineKeyboardButton("📢 Оповещение не выданных", callback_data="manager_notify_pending")],
+        [InlineKeyboardButton("📢 Оповещение активных", callback_data="manager_notify_active")],
+        [InlineKeyboardButton("📈 Отчеты", callback_data="manager_reports")]
     ]
     return InlineKeyboardMarkup(keyboard)
 

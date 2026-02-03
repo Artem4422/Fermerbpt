@@ -305,11 +305,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     import qr_code
                     qr_image = qr_code.generate_qr_code(order['order_number'])
                     
+                    # Формируем номер заказа для отображения
+                    table_number = order.get('session_order_number', '—')
+                    order_code = order['order_number']
+                    order_num_display = f"№{table_number} (код: {order_code})"
+                    
                     await update.message.reply_photo(
                         photo=qr_image,
                         caption=(
                             f"✅ Заказ успешно создан!\n\n"
-                            f"📋 Номер заказа: #{order['order_number']}\n"
+                            f"📋 Номер заказа: {order_num_display}\n"
                             f"📦 Сессия: {session['session_name']}\n"
                             f"👤 ФИО: {order['full_name']}\n"
                             f"📱 Телефон: {order['phone_number']}\n\n"
@@ -327,6 +332,73 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await update.message.reply_text("❌ ФИО не может быть пустым!")
     
     # Обработка поиска заказа менеджером
+    elif context.user_data.get('finding_order'):
+        finding_data = context.user_data['finding_order']
+        if finding_data.get('step') == 'waiting_number':
+            if database.is_manager(user_id) or database.is_admin(user_id):
+                session_id = finding_data['session_id']
+                session = database.get_session(session_id)
+                
+                if not session:
+                    context.user_data.pop('finding_order', None)
+                    await update.message.reply_text("❌ Сессия не найдена!")
+                    return
+                
+                order_number = update.message.text.strip()
+                
+                # Сначала пытаемся найти по номеру сессии в этой сессии
+                order = None
+                if order_number.isdigit():
+                    # Ищем по номеру сессии в конкретной сессии
+                    orders = database.find_orders_by_session_numbers(session_id, [int(order_number)])
+                    if orders:
+                        order = orders[0]
+                
+                # Если не найдено, ищем по общему номеру заказа
+                if not order:
+                    order = database.find_order_by_number(order_number)
+                    # Проверяем, что заказ принадлежит выбранной сессии
+                    if order and order['session_id'] != session_id:
+                        order = None
+                
+                if order:
+                    order_items = database.get_order_items(order['order_id'])
+                    order_session = database.get_session(order['session_id'])
+                    
+                    items_text = "\n".join([
+                        f"• {item['product_name']} x{item['quantity']} = {item['quantity'] * item['price']}₽"
+                        for item in order_items
+                    ])
+                    
+                    from keyboards.manager import get_order_actions_keyboard
+                    keyboard = get_order_actions_keyboard(order['order_id'])
+                    
+                    order_num_display = f"#{order.get('session_order_number', order['order_number'])}"
+                    if order.get('session_order_number'):
+                        order_num_display += f" (общий: {order['order_number']})"
+                    
+                    await update.message.reply_text(
+                        f"📋 Заказ {order_num_display}\n\n"
+                        f"📦 Сессия: {order_session['session_name'] if order_session else 'Не найдена'}\n"
+                        f"👤 ФИО: {order['full_name']}\n"
+                        f"📱 Телефон: {order['phone_number']}\n"
+                        f"📊 Статус: {database.get_order_status_ru(order['status'])}\n"
+                        f"📅 Дата: {order['created_at']}\n\n"
+                        f"Товары:\n{items_text}\n\n"
+                        f"💰 Общая сумма: {order['total_amount']}₽",
+                        reply_markup=keyboard
+                    )
+                    context.user_data.pop('finding_order', None)
+                else:
+                    await update.message.reply_text(
+                        f"❌ Заказ с номером {order_number} не найден в сессии '{session['session_name']}'!\n\n"
+                        f"Попробуйте еще раз или вернитесь в панель менеджера."
+                    )
+            else:
+                context.user_data.pop('finding_order', None)
+                await update.message.reply_text("❌ У вас нет прав для поиска заказов!")
+    
+    # Старый обработчик для обратной совместимости (если где-то остался)
     elif context.user_data.get('waiting_for_order_number'):
         if database.is_manager(user_id):
             order_number = update.message.text.strip()
@@ -344,8 +416,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 from keyboards.manager import get_order_actions_keyboard
                 keyboard = get_order_actions_keyboard(order['order_id'])
                 
+                order_num_display = f"#{order.get('session_order_number', order['order_number'])}"
+                if order.get('session_order_number'):
+                    order_num_display += f" (общий: {order['order_number']})"
+                
                 await update.message.reply_text(
-                    f"📋 Заказ #{order['order_number']}\n\n"
+                    f"📋 Заказ {order_num_display}\n\n"
                     f"📦 Сессия: {session['session_name'] if session else 'Не найдена'}\n"
                     f"👤 ФИО: {order['full_name']}\n"
                     f"📱 Телефон: {order['phone_number']}\n"
@@ -364,6 +440,241 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             context.user_data.pop('waiting_for_order_number', None)
             await update.message.reply_text("❌ У вас нет прав для поиска заказов!")
+    
+    # Обработка массовой выдачи заказов менеджером
+    elif context.user_data.get('bulk_complete'):
+        bulk_data = context.user_data['bulk_complete']
+        if bulk_data.get('step') == 'waiting_numbers':
+            if database.is_manager(user_id) or database.is_admin(user_id):
+                session_id = bulk_data['session_id']
+                session = database.get_session(session_id)
+                
+                if not session:
+                    context.user_data.pop('bulk_complete', None)
+                    await update.message.reply_text("❌ Сессия не найдена!")
+                    return
+                
+                # Парсим номера заказов
+                text = update.message.text.strip()
+                try:
+                    # Разбиваем строку на числа (поддерживаем и запятые, и пробелы)
+                    # Заменяем запятые на пробелы и разбиваем
+                    text_normalized = text.replace(',', ' ').replace('，', ' ').replace(';', ' ')  # Поддержка запятых, точки с запятой
+                    order_numbers = [int(num.strip()) for num in text_normalized.split() if num.strip().isdigit()]
+                    
+                    if not order_numbers:
+                        await update.message.reply_text(
+                            "❌ Не найдено ни одного номера заказа!\n\n"
+                            "Введите номера заказов через пробел или запятую (например: 1 11 2 3 5 или 1,2,3,4):"
+                        )
+                        return
+                    
+                    # Находим заказы по номерам сессии
+                    orders = database.find_orders_by_session_numbers(session_id, order_numbers)
+                    
+                    if not orders:
+                        await update.message.reply_text(
+                            f"❌ Не найдено ни одного заказа с указанными номерами в сессии '{session['session_name']}'!\n\n"
+                            f"Попробуйте еще раз."
+                        )
+                        return
+                    
+                    # Фильтруем только незавершенные заказы
+                    pending_orders = [o for o in orders if o['status'] != 'completed']
+                    already_completed = [o for o in orders if o['status'] == 'completed']
+                    
+                    if not pending_orders:
+                        already_text = "\n".join([f"• Заказ №{o['session_order_number']}" for o in already_completed[:10]])
+                        if len(already_completed) > 10:
+                            already_text += f"\n... и еще {len(already_completed) - 10} заказов"
+                        await update.message.reply_text(
+                            f"⚠️ Все указанные заказы уже выданы!\n\n"
+                            f"Уже выданные заказы:\n{already_text}"
+                        )
+                        context.user_data.pop('bulk_complete', None)
+                        return
+                    
+                    # Выполняем массовую выдачу
+                    order_ids = [o['order_id'] for o in pending_orders]
+                    result = database.bulk_complete_orders(order_ids)
+                    
+                    # Формируем отчет
+                    success_count = len(result['success'])
+                    failed_count = len(result['failed'])
+                    already_count = len(result['already_completed'])
+                    
+                    report_text = f"✅ Массовая выдача завершена!\n\n"
+                    report_text += f"📦 Сессия: {session['session_name']}\n\n"
+                    report_text += f"✅ Успешно выдано: {success_count} заказов\n"
+                    
+                    if already_count > 0:
+                        report_text += f"⚠️ Уже были выданы: {already_count} заказов\n"
+                    if failed_count > 0:
+                        report_text += f"❌ Ошибка при выдаче: {failed_count} заказов\n"
+                    
+                    # Отправляем уведомления пользователям
+                    for order_id in result['success']:
+                        order = database.get_order(order_id)
+                        if order:
+                            try:
+                                await context.bot.send_message(
+                                    chat_id=order['user_id'],
+                                    text=f"✅ Ваш заказ №{order.get('session_order_number', order['order_number'])} выдан!\n\n"
+                                         f"Спасибо за покупку!"
+                                )
+                            except Exception as e:
+                                import logging
+                                logging.getLogger(__name__).error(f"Ошибка при отправке уведомления: {e}")
+                    
+                    # Показываем список выданных заказов
+                    if success_count > 0:
+                        success_orders = [o for o in pending_orders if o['order_id'] in result['success']]
+                        orders_list = "\n".join([
+                            f"• Заказ №{o['session_order_number']} - {o['full_name']}"
+                            for o in success_orders[:20]
+                        ])
+                        if len(success_orders) > 20:
+                            orders_list += f"\n... и еще {len(success_orders) - 20} заказов"
+                        report_text += f"\n\nВыданные заказы:\n{orders_list}"
+                    
+                    await update.message.reply_text(report_text)
+                    context.user_data.pop('bulk_complete', None)
+                except ValueError:
+                    await update.message.reply_text(
+                        "❌ Некорректный формат!\n\n"
+                        "Введите номера заказов через пробел или запятую (например: 1 11 2 3 5 или 1,2,3,4):"
+                    )
+            else:
+                context.user_data.pop('bulk_complete', None)
+                await update.message.reply_text("❌ У вас нет прав для массовой выдачи!")
+    
+    # Обработка оповещения не выданных заказов
+    elif context.user_data.get('notify_pending'):
+        notify_data = context.user_data['notify_pending']
+        if notify_data.get('step') == 'waiting_message':
+            if database.is_manager(user_id) or database.is_admin(user_id):
+                session_id = notify_data['session_id']
+                session = database.get_session(session_id)
+                
+                if not session:
+                    context.user_data.pop('notify_pending', None)
+                    await update.message.reply_text("❌ Сессия не найдена!")
+                    return
+                
+                message_text = update.message.text.strip()
+                
+                if not message_text:
+                    await update.message.reply_text(
+                        "❌ Текст сообщения не может быть пустым!\n\n"
+                        "Введите текст сообщения:"
+                    )
+                    return
+                
+                # Получаем пользователей с не выданными заказами
+                user_ids = database.get_users_with_pending_orders_by_session(session_id)
+                
+                if not user_ids:
+                    await update.message.reply_text(
+                        f"❌ В сессии '{session['session_name']}' нет пользователей с не выданными заказами!"
+                    )
+                    context.user_data.pop('notify_pending', None)
+                    return
+                
+                # Отправляем сообщения
+                sent_count = 0
+                failed_count = 0
+                
+                await update.message.reply_text(f"⏳ Отправка сообщений {len(user_ids)} пользователям...")
+                
+                for user_id in user_ids:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=message_text
+                        )
+                        sent_count += 1
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).error(f"Ошибка при отправке сообщения пользователю {user_id}: {e}")
+                        failed_count += 1
+                
+                result_text = (
+                    f"✅ Оповещение отправлено!\n\n"
+                    f"📦 Сессия: {session['session_name']}\n"
+                    f"✅ Успешно отправлено: {sent_count} пользователям\n"
+                )
+                if failed_count > 0:
+                    result_text += f"❌ Ошибок при отправке: {failed_count}\n"
+                
+                await update.message.reply_text(result_text)
+                context.user_data.pop('notify_pending', None)
+            else:
+                context.user_data.pop('notify_pending', None)
+                await update.message.reply_text("❌ У вас нет прав для отправки оповещений!")
+    
+    # Обработка оповещения активных заказов
+    elif context.user_data.get('notify_active'):
+        notify_data = context.user_data['notify_active']
+        if notify_data.get('step') == 'waiting_message':
+            if database.is_manager(user_id) or database.is_admin(user_id):
+                session_id = notify_data['session_id']
+                session = database.get_session(session_id)
+                
+                if not session:
+                    context.user_data.pop('notify_active', None)
+                    await update.message.reply_text("❌ Сессия не найдена!")
+                    return
+                
+                message_text = update.message.text.strip()
+                
+                if not message_text:
+                    await update.message.reply_text(
+                        "❌ Текст сообщения не может быть пустым!\n\n"
+                        "Введите текст сообщения:"
+                    )
+                    return
+                
+                # Получаем пользователей с активными заказами (pending или processing)
+                user_ids = database.get_users_with_active_orders_by_session(session_id)
+                
+                if not user_ids:
+                    await update.message.reply_text(
+                        f"❌ В сессии '{session['session_name']}' нет пользователей с активными заказами!"
+                    )
+                    context.user_data.pop('notify_active', None)
+                    return
+                
+                # Отправляем сообщения
+                sent_count = 0
+                failed_count = 0
+                
+                await update.message.reply_text(f"⏳ Отправка сообщений {len(user_ids)} пользователям...")
+                
+                for user_id in user_ids:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=message_text
+                        )
+                        sent_count += 1
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).error(f"Ошибка при отправке сообщения пользователю {user_id}: {e}")
+                        failed_count += 1
+                
+                result_text = (
+                    f"✅ Оповещение отправлено!\n\n"
+                    f"📦 Сессия: {session['session_name']}\n"
+                    f"✅ Успешно отправлено: {sent_count} пользователям\n"
+                )
+                if failed_count > 0:
+                    result_text += f"❌ Ошибок при отправке: {failed_count}\n"
+                
+                await update.message.reply_text(result_text)
+                context.user_data.pop('notify_active', None)
+            else:
+                context.user_data.pop('notify_active', None)
+                await update.message.reply_text("❌ У вас нет прав для отправки оповещений!")
     
     # Обработка изменения количества ящиков товара
     elif context.user_data.get('changing_box_volume'):

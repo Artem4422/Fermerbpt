@@ -97,6 +97,7 @@ def init_database():
         CREATE TABLE IF NOT EXISTS orders (
             order_id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_number TEXT NOT NULL UNIQUE,
+            session_order_number INTEGER,
             user_id INTEGER NOT NULL,
             session_id INTEGER NOT NULL,
             phone_number TEXT,
@@ -108,6 +109,12 @@ def init_database():
             FOREIGN KEY (session_id) REFERENCES sessions(session_id)
         )
     """)
+    
+    # Добавляем поле session_order_number, если таблица уже существует
+    try:
+        cursor.execute("ALTER TABLE orders ADD COLUMN session_order_number INTEGER")
+    except sqlite3.OperationalError:
+        pass  # Поле уже существует
     
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS order_items (
@@ -667,18 +674,35 @@ def generate_order_number() -> str:
         conn.close()
 
 
+def generate_session_order_number(session_id: int) -> int:
+    """Генерирует номер заказа по сессии (следующий по порядку)"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    # Находим максимальный номер заказа в этой сессии
+    cursor.execute("""
+        SELECT MAX(session_order_number) 
+        FROM orders 
+        WHERE session_id = ? AND session_order_number IS NOT NULL
+    """, (session_id,))
+    result = cursor.fetchone()
+    max_number = result[0] if result[0] else 0
+    conn.close()
+    return max_number + 1
+
+
 def create_order(user_id: int, session_id: int, phone_number: str, full_name: str, items: list) -> Optional[int]:
     """Создает заказ"""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     try:
         order_number = generate_order_number()
+        session_order_number = generate_session_order_number(session_id)
         total_amount = sum(item['quantity'] * item['price'] for item in items)
         
         cursor.execute("""
-            INSERT INTO orders (order_number, user_id, session_id, phone_number, full_name, total_amount)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (order_number, user_id, session_id, phone_number, full_name, total_amount))
+            INSERT INTO orders (order_number, session_order_number, user_id, session_id, phone_number, full_name, total_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (order_number, session_order_number, user_id, session_id, phone_number, full_name, total_amount))
         
         order_id = cursor.lastrowid
         
@@ -700,7 +724,7 @@ def create_order(user_id: int, session_id: int, phone_number: str, full_name: st
         
         conn.commit()
         conn.close()
-        logger.info(f"Создан заказ {order_number} пользователем {user_id}")
+        logger.info(f"Создан заказ {order_number} (№{session_order_number} по сессии) пользователем {user_id}")
         return order_id
     except Exception as e:
         logger.error(f"Ошибка при создании заказа: {e}")
@@ -713,7 +737,7 @@ def get_order(order_id: int) -> Optional[dict]:
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT order_id, order_number, user_id, session_id, phone_number, full_name, 
+        SELECT order_id, order_number, session_order_number, user_id, session_id, phone_number, full_name, 
                total_amount, status, created_at
         FROM orders WHERE order_id = ?
     """, (order_id,))
@@ -723,13 +747,14 @@ def get_order(order_id: int) -> Optional[dict]:
         return {
             "order_id": row[0],
             "order_number": row[1],
-            "user_id": row[2],
-            "session_id": row[3],
-            "phone_number": row[4],
-            "full_name": row[5],
-            "total_amount": row[6],
-            "status": row[7],
-            "created_at": row[8]
+            "session_order_number": row[2],
+            "user_id": row[3],
+            "session_id": row[4],
+            "phone_number": row[5],
+            "full_name": row[6],
+            "total_amount": row[7],
+            "status": row[8],
+            "created_at": row[9]
         }
     return None
 
@@ -981,29 +1006,136 @@ def get_order_status_ru(status: str) -> str:
 
 
 def find_order_by_number(order_number: str) -> Optional[dict]:
-    """Находит заказ по номеру"""
+    """Находит заказ по номеру (общему или по сессии)"""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+    
+    # Пытаемся найти по общему номеру
     cursor.execute("""
-        SELECT order_id, order_number, user_id, session_id, phone_number, full_name, 
+        SELECT order_id, order_number, session_order_number, user_id, session_id, phone_number, full_name, 
                total_amount, status, created_at
         FROM orders WHERE order_number = ?
     """, (order_number,))
     row = cursor.fetchone()
+    
+    # Если не найдено и номер - число, ищем по номеру сессии
+    if not row and order_number.isdigit():
+        cursor.execute("""
+            SELECT order_id, order_number, session_order_number, user_id, session_id, phone_number, full_name, 
+                   total_amount, status, created_at
+            FROM orders WHERE session_order_number = ?
+        """, (int(order_number),))
+        row = cursor.fetchone()
+    
     conn.close()
     if row:
         return {
             "order_id": row[0],
             "order_number": row[1],
-            "user_id": row[2],
-            "session_id": row[3],
-            "phone_number": row[4],
-            "full_name": row[5],
-            "total_amount": row[6],
-            "status": row[7],
-            "created_at": row[8]
+            "session_order_number": row[2],
+            "user_id": row[3],
+            "session_id": row[4],
+            "phone_number": row[5],
+            "full_name": row[6],
+            "total_amount": row[7],
+            "status": row[8],
+            "created_at": row[9]
         }
     return None
+
+
+def find_orders_by_session_numbers(session_id: int, session_order_numbers: list) -> list:
+    """Находит заказы по номерам заказов в сессии"""
+    if not session_order_numbers:
+        return []
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    placeholders = ','.join(['?'] * len(session_order_numbers))
+    cursor.execute(f"""
+        SELECT order_id, order_number, session_order_number, user_id, session_id, phone_number, full_name, 
+               total_amount, status, created_at
+        FROM orders 
+        WHERE session_id = ? AND session_order_number IN ({placeholders})
+    """, (session_id, *session_order_numbers))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    return [
+        {
+            "order_id": row[0],
+            "order_number": row[1],
+            "session_order_number": row[2],
+            "user_id": row[3],
+            "session_id": row[4],
+            "phone_number": row[5],
+            "full_name": row[6],
+            "total_amount": row[7],
+            "status": row[8],
+            "created_at": row[9]
+        }
+        for row in rows
+    ]
+
+
+def bulk_complete_orders(order_ids: list) -> dict:
+    """Массово выдает заказы (меняет статус на completed)"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    result = {
+        'success': [],
+        'failed': [],
+        'already_completed': []
+    }
+    
+    try:
+        for order_id in order_ids:
+            # Получаем текущий статус и информацию о заказе
+            cursor.execute("SELECT status, user_id, session_id FROM orders WHERE order_id = ?", (order_id,))
+            order_data = cursor.fetchone()
+            
+            if not order_data:
+                result['failed'].append(order_id)
+                continue
+            
+            old_status, user_id, session_id = order_data
+            
+            if old_status == 'completed':
+                result['already_completed'].append(order_id)
+                continue
+            
+            # Обновляем статус
+            cursor.execute("UPDATE orders SET status = ? WHERE order_id = ?", ('completed', order_id))
+            
+            # Если статус меняется на 'completed', обновляем лимит пользователя
+            if old_status != 'completed':
+                # Получаем количество ящиков в заказе
+                cursor.execute("""
+                    SELECT SUM(quantity) FROM order_items WHERE order_id = ?
+                """, (order_id,))
+                total_boxes = cursor.fetchone()[0] or 0
+                
+                if total_boxes > 0:
+                    # Увеличиваем количество купленных ящиков
+                    cursor.execute("""
+                        INSERT INTO user_session_limits (user_id, session_id, boxes_purchased)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(user_id, session_id) 
+                        DO UPDATE SET boxes_purchased = boxes_purchased + ?
+                    """, (user_id, session_id, total_boxes, total_boxes))
+            
+            result['success'].append(order_id)
+        
+        conn.commit()
+        conn.close()
+        return result
+    except Exception as e:
+        logger.error(f"Ошибка при массовой выдаче заказов: {e}")
+        conn.rollback()
+        conn.close()
+        return result
 
 
 def update_order_status(order_id: int, status: str) -> bool:
@@ -1135,7 +1267,7 @@ def get_session_orders(session_id: int) -> list:
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT o.order_id, o.order_number, o.user_id, o.phone_number, o.full_name, 
+        SELECT o.order_id, o.order_number, o.session_order_number, o.user_id, o.phone_number, o.full_name, 
                o.total_amount, o.status, o.created_at,
                GROUP_CONCAT(p.product_name || ' x' || oi.quantity || ' (' || oi.price || '₽)') as items
         FROM orders o
@@ -1143,7 +1275,7 @@ def get_session_orders(session_id: int) -> list:
         LEFT JOIN products p ON oi.product_id = p.product_id
         WHERE o.session_id = ?
         GROUP BY o.order_id
-        ORDER BY o.created_at DESC
+        ORDER BY o.session_order_number ASC, o.created_at DESC
     """, (session_id,))
     orders = cursor.fetchall()
     conn.close()
@@ -1151,13 +1283,14 @@ def get_session_orders(session_id: int) -> list:
         {
             "order_id": order[0],
             "order_number": order[1],
-            "user_id": order[2],
-            "phone_number": order[3],
-            "full_name": order[4],
-            "total_amount": order[5],
-            "status": order[6],
-            "created_at": order[7],
-            "items": order[8] or "Нет товаров"
+            "session_order_number": order[2],
+            "user_id": order[3],
+            "phone_number": order[4],
+            "full_name": order[5],
+            "total_amount": order[6],
+            "status": order[7],
+            "created_at": order[8],
+            "items": order[9] or "Нет товаров"
         }
         for order in orders
     ]
@@ -1211,6 +1344,34 @@ def get_session_sales_stats(session_id: int) -> dict:
     """, (session_id,))
     unique_customers = cursor.fetchone()[0] or 0
     
+    # Получаем информацию о товарах сессии с проданными количествами
+    cursor.execute("""
+        SELECT 
+            p.product_id,
+            p.product_name,
+            p.price,
+            p.boxes_count,
+            COALESCE(SUM(CASE WHEN o.status = 'completed' THEN oi.quantity ELSE 0 END), 0) as sold_boxes
+        FROM products p
+        LEFT JOIN order_items oi ON p.product_id = oi.product_id
+        LEFT JOIN orders o ON oi.order_id = o.order_id AND o.session_id = ?
+        WHERE p.session_id = ?
+        GROUP BY p.product_id, p.product_name, p.price, p.boxes_count
+        ORDER BY p.created_at DESC
+    """, (session_id, session_id))
+    
+    products_info = []
+    for row in cursor.fetchall():
+        product_id, product_name, price, boxes_count, sold_boxes = row
+        products_info.append({
+            'product_id': product_id,
+            'product_name': product_name,
+            'price': price,
+            'initial_boxes': boxes_count + sold_boxes,  # Начальное количество = текущее + проданное
+            'sold_boxes': sold_boxes,
+            'remaining_boxes': boxes_count
+        })
+    
     conn.close()
     
     return {
@@ -1221,7 +1382,8 @@ def get_session_sales_stats(session_id: int) -> dict:
         'cancelled_orders': cancelled_orders,
         'total_revenue': total_revenue,
         'total_boxes_sold': total_boxes_sold,
-        'unique_customers': unique_customers
+        'unique_customers': unique_customers,
+        'products': products_info
     }
 
 
@@ -1320,7 +1482,7 @@ def get_user_all_orders(user_id: int) -> list:
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT o.order_id, o.order_number, o.session_id, o.total_amount, o.status, o.created_at,
+        SELECT o.order_id, o.order_number, o.session_order_number, o.session_id, o.total_amount, o.status, o.created_at,
                s.session_name,
                GROUP_CONCAT(p.product_name || ' x' || oi.quantity || ' (' || oi.price || '₽)') as items
         FROM orders o
@@ -1337,12 +1499,13 @@ def get_user_all_orders(user_id: int) -> list:
         {
             "order_id": order[0],
             "order_number": order[1],
-            "session_id": order[2],
-            "total_amount": order[3],
-            "status": order[4],
-            "created_at": order[5],
-            "session_name": order[6] or "Неизвестная сессия",
-            "items": order[7] or "Нет товаров"
+            "session_order_number": order[2],
+            "session_id": order[3],
+            "total_amount": order[4],
+            "status": order[5],
+            "created_at": order[6],
+            "session_name": order[7] or "Неизвестная сессия",
+            "items": order[8] or "Нет товаров"
         }
         for order in orders
     ]
@@ -1353,7 +1516,7 @@ def get_user_pending_orders(user_id: int) -> list:
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT o.order_id, o.order_number, o.session_id, o.total_amount, o.status, o.created_at,
+        SELECT o.order_id, o.order_number, o.session_order_number, o.session_id, o.total_amount, o.status, o.created_at,
                s.session_name,
                GROUP_CONCAT(p.product_name || ' x' || oi.quantity || ' (' || oi.price || '₽)') as items
         FROM orders o
@@ -1370,12 +1533,13 @@ def get_user_pending_orders(user_id: int) -> list:
         {
             "order_id": order[0],
             "order_number": order[1],
-            "session_id": order[2],
-            "total_amount": order[3],
-            "status": order[4],
-            "created_at": order[5],
-            "session_name": order[6] or "Неизвестная сессия",
-            "items": order[7] or "Нет товаров"
+            "session_order_number": order[2],
+            "session_id": order[3],
+            "total_amount": order[4],
+            "status": order[5],
+            "created_at": order[6],
+            "session_name": order[7] or "Неизвестная сессия",
+            "items": order[8] or "Нет товаров"
         }
         for order in orders
     ]
@@ -1427,3 +1591,34 @@ def get_user_statistics(user_id: int) -> dict:
         "completed_orders": completed_orders,
         "pending_orders": pending_orders
     }
+
+
+def get_users_with_pending_orders_by_session(session_id: int) -> list:
+    """Получает список уникальных пользователей с не выданными заказами в сессии"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT DISTINCT o.user_id
+        FROM orders o
+        WHERE o.session_id = ? 
+        AND o.status != 'completed' 
+        AND o.status != 'cancelled'
+    """, (session_id,))
+    user_ids = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return user_ids
+
+
+def get_users_with_active_orders_by_session(session_id: int) -> list:
+    """Получает список уникальных пользователей с активными заказами (pending или processing) в сессии"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT DISTINCT o.user_id
+        FROM orders o
+        WHERE o.session_id = ? 
+        AND (o.status = 'pending' OR o.status = 'processing')
+    """, (session_id,))
+    user_ids = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return user_ids

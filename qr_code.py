@@ -47,3 +47,21 @@ def mask_name(name: str) -> str:
     else:
         # ФИО
         return parts[0][0] + "*" * (len(parts[0]) - 1) + " " + parts[1][0] + "*" * (len(parts[1]) - 1) + " " + parts[2][0] + "*" * (len(parts[2]) - 1)
+
+
+def mask_phone_channel(phone: str) -> str:
+    """Маскирует номер телефона для канала: показывает первую цифру и последние 4, остальное убирает"""
+    if not phone or len(phone) < 5:
+        return phone
+    return phone[0] + phone[-4:]
+
+
+def mask_name_channel(name: str) -> str:
+    """Маскирует ФИО для канала: показывает только имя, остальное убирает"""
+    if not name:
+        return name
+    parts = name.split()
+    if len(parts) == 0:
+        return name
+    # Возвращаем только первое слово (имя)
+    return parts[0]

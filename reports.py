@@ -5,6 +5,7 @@ from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 from datetime import datetime
 import io
+import qr_code
 
 
 def generate_session_report_excel(session_id: int) -> io.BytesIO:
@@ -340,36 +341,155 @@ def generate_period_report_excel(period: str) -> io.BytesIO:
     ws_orders = wb.create_sheet("Все заказы")
     
     headers_orders = ["№ заказа", "Сессия", "ФИО", "Телефон", "Товары", "Ящиков", "Сумма", "Статус", "Дата"]
-    for col, header in enumerate(headers_orders, 1):
-        cell = ws_orders.cell(row=1, column=col)
-        cell.value = header
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = center_align
-        cell.border = border
     
-    row = 2
-    for order in orders:
-        session = database.get_session(order['session_id'])
-        session_name = session['session_name'] if session else f"Сессия {order['session_id']}"
-        order_items = database.get_order_items(order['order_id'])
-        boxes_in_order = sum(item['quantity'] for item in order_items)
+    # Если период "all_time", группируем по сессиям с заголовками
+    if period == "all_time":
+        row = 1
         
-        ws_orders.cell(row=row, column=1).value = order['order_number']
-        ws_orders.cell(row=row, column=2).value = session_name
-        ws_orders.cell(row=row, column=3).value = order['full_name']
-        ws_orders.cell(row=row, column=4).value = order['phone_number']
-        ws_orders.cell(row=row, column=5).value = order['items']
-        ws_orders.cell(row=row, column=6).value = boxes_in_order
-        ws_orders.cell(row=row, column=7).value = order['total_amount']
-        ws_orders.cell(row=row, column=7).number_format = '#,##0.00₽'
-        ws_orders.cell(row=row, column=8).value = database.get_order_status_ru(order['status'])
-        ws_orders.cell(row=row, column=9).value = order['created_at']
+        # Группируем заказы по сессиям
+        orders_by_session = {}
+        for order in orders:
+            session_id = order['session_id']
+            if session_id not in orders_by_session:
+                orders_by_session[session_id] = []
+            orders_by_session[session_id].append(order)
         
-        for col in range(1, 10):
-            ws_orders.cell(row=row, column=col).border = border
+        # Сортируем сессии по дате создания (если есть)
+        sorted_sessions = sorted(sessions, key=lambda s: s.get('created_at', ''), reverse=True)
         
-        row += 1
+        session_header_fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
+        session_header_font = Font(bold=True, size=13)
+        
+        for idx, session in enumerate(sorted_sessions):
+            session_id = session['session_id']
+            if session_id not in orders_by_session:
+                continue
+            
+            session_orders = orders_by_session[session_id]
+            
+            # Заголовок сессии (для каждой сессии, включая первую)
+            ws_orders.cell(row=row, column=1).value = f"СЕССИЯ: {session['session_name']}"
+            ws_orders.cell(row=row, column=1).font = session_header_font
+            ws_orders.cell(row=row, column=1).fill = session_header_fill
+            ws_orders.merge_cells(f'A{row}:I{row}')
+            row += 1
+            
+            # Заголовки таблицы для этой сессии (после каждого заголовка сессии)
+            for col, header in enumerate(headers_orders, 1):
+                cell = ws_orders.cell(row=row, column=col)
+                cell.value = header
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = center_align
+                cell.border = border
+            row += 1
+            
+            # Заказы этой сессии
+            session_total_amount = 0
+            session_total_boxes = 0
+            session_completed_count = 0
+            last_order_date = None
+            
+            for order in session_orders:
+                order_items = database.get_order_items(order['order_id'])
+                boxes_in_order = sum(item['quantity'] for item in order_items)
+                
+                ws_orders.cell(row=row, column=1).value = order['order_number']
+                ws_orders.cell(row=row, column=2).value = session['session_name']
+                ws_orders.cell(row=row, column=3).value = order['full_name']
+                ws_orders.cell(row=row, column=4).value = order['phone_number']
+                ws_orders.cell(row=row, column=5).value = order['items']
+                ws_orders.cell(row=row, column=6).value = boxes_in_order
+                ws_orders.cell(row=row, column=7).value = order['total_amount']
+                ws_orders.cell(row=row, column=7).number_format = '#,##0.00₽'
+                ws_orders.cell(row=row, column=8).value = database.get_order_status_ru(order['status'])
+                ws_orders.cell(row=row, column=9).value = order['created_at']
+                
+                # Подсчитываем статистику
+                session_total_amount += order['total_amount']
+                session_total_boxes += boxes_in_order
+                if order['status'] == 'completed':
+                    session_completed_count += 1
+                if not last_order_date or order['created_at'] > last_order_date:
+                    last_order_date = order['created_at']
+                
+                for col in range(1, 10):
+                    ws_orders.cell(row=row, column=col).border = border
+                
+                row += 1
+            
+            # Добавляем строку с итогами сессии
+            summary_fill = PatternFill(start_color="E6E6FA", end_color="E6E6FA", fill_type="solid")
+            summary_font = Font(bold=True, size=11)
+            
+            # Статус сессии
+            session_status = "Активна" if session.get('is_active') else "Закрыта"
+            # Дата завершения (дата последнего заказа или дата создания сессии)
+            session_end_date = last_order_date if last_order_date else session.get('created_at', '')
+            
+            ws_orders.cell(row=row, column=1).value = "ИТОГИ СЕССИИ:"
+            ws_orders.cell(row=row, column=1).font = summary_font
+            ws_orders.cell(row=row, column=1).fill = summary_fill
+            ws_orders.cell(row=row, column=2).value = f"Заказов: {len(session_orders)}"
+            ws_orders.cell(row=row, column=2).font = summary_font
+            ws_orders.cell(row=row, column=2).fill = summary_fill
+            ws_orders.cell(row=row, column=3).value = f"Выдано: {session_completed_count}"
+            ws_orders.cell(row=row, column=3).font = summary_font
+            ws_orders.cell(row=row, column=3).fill = summary_fill
+            ws_orders.cell(row=row, column=4).value = f"Ящиков: {session_total_boxes}"
+            ws_orders.cell(row=row, column=4).font = summary_font
+            ws_orders.cell(row=row, column=4).fill = summary_fill
+            ws_orders.cell(row=row, column=5).value = f"Выручка: {session_total_amount:.2f}₽"
+            ws_orders.cell(row=row, column=5).font = summary_font
+            ws_orders.cell(row=row, column=5).fill = summary_fill
+            ws_orders.cell(row=row, column=6).value = ""  # Пусто
+            ws_orders.cell(row=row, column=6).fill = summary_fill
+            ws_orders.cell(row=row, column=7).value = ""  # Пусто
+            ws_orders.cell(row=row, column=7).fill = summary_fill
+            ws_orders.cell(row=row, column=8).value = f"Статус: {session_status}"
+            ws_orders.cell(row=row, column=8).font = summary_font
+            ws_orders.cell(row=row, column=8).fill = summary_fill
+            ws_orders.cell(row=row, column=9).value = f"Дата: {session_end_date}"
+            ws_orders.cell(row=row, column=9).font = summary_font
+            ws_orders.cell(row=row, column=9).fill = summary_fill
+            
+            # Применяем границы и объединяем ячейки для лучшего вида
+            for col in range(1, 10):
+                ws_orders.cell(row=row, column=col).border = border
+            
+            row += 1
+    else:
+        # Для других периодов оставляем как было
+        for col, header in enumerate(headers_orders, 1):
+            cell = ws_orders.cell(row=1, column=col)
+            cell.value = header
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center_align
+            cell.border = border
+        
+        row = 2
+        for order in orders:
+            session = database.get_session(order['session_id'])
+            session_name = session['session_name'] if session else f"Сессия {order['session_id']}"
+            order_items = database.get_order_items(order['order_id'])
+            boxes_in_order = sum(item['quantity'] for item in order_items)
+            
+            ws_orders.cell(row=row, column=1).value = order['order_number']
+            ws_orders.cell(row=row, column=2).value = session_name
+            ws_orders.cell(row=row, column=3).value = order['full_name']
+            ws_orders.cell(row=row, column=4).value = order['phone_number']
+            ws_orders.cell(row=row, column=5).value = order['items']
+            ws_orders.cell(row=row, column=6).value = boxes_in_order
+            ws_orders.cell(row=row, column=7).value = order['total_amount']
+            ws_orders.cell(row=row, column=7).number_format = '#,##0.00₽'
+            ws_orders.cell(row=row, column=8).value = database.get_order_status_ru(order['status'])
+            ws_orders.cell(row=row, column=9).value = order['created_at']
+            
+            for col in range(1, 10):
+                ws_orders.cell(row=row, column=col).border = border
+            
+            row += 1
     
     # Автоподбор ширины колонок
     for col in range(1, 10):
@@ -486,3 +606,1019 @@ def generate_period_report_excel(period: str) -> io.BytesIO:
     excel_bytes.seek(0)
     
     return excel_bytes
+
+
+def generate_channel_report_excel(session_id: int) -> io.BytesIO:
+    """Генерирует Excel отчет для канала с маскировкой данных в формате двух столбцов"""
+    session = database.get_session(session_id)
+    if not session:
+        raise ValueError("Сессия не найдена")
+    
+    # Получаем данные
+    orders = database.get_session_orders(session_id)
+    
+    # Создаем рабочую книгу
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Отчет для канала"
+    
+    # Стили
+    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    center_align = Alignment(horizontal='center', vertical='center')
+    
+    # Заголовки для первого столбца (колонки A-F)
+    headers_left = ["н", "тел", "фио", "тов", "я", "сум"]
+    for col, header in enumerate(headers_left, 1):
+        cell = ws.cell(row=1, column=col)
+        cell.value = header
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_align
+        cell.border = border
+    
+    # Заголовки для второго столбца (колонки H-M)
+    headers_right = ["н", "тел", "фио", "тов", "я", "сум"]
+    for col, header in enumerate(headers_right, 1):
+        cell = ws.cell(row=1, column=col + 7)  # +7 чтобы начать с колонки H (8-я колонка)
+        cell.value = header
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_align
+        cell.border = border
+    
+    # Разделяем заказы на две части для двух столбцов
+    total_orders = len(orders)
+    mid_point = (total_orders + 1) // 2  # Округляем вверх
+    
+    orders_left = orders[:mid_point]
+    orders_right = orders[mid_point:]
+    
+    # Заполняем левый столбец
+    row = 2
+    row_number = 1
+    for order in orders_left:
+        # Маскируем данные
+        masked_name = qr_code.mask_name_channel(order['full_name'])
+        masked_phone = qr_code.mask_phone_channel(order['phone_number'])
+        
+        # Получаем товары заказа
+        order_items = database.get_order_items(order['order_id'])
+        if order_items:
+            # Берем первый товар (или объединяем если несколько)
+            product_names = [item['product_name'] for item in order_items]
+            product_name = ", ".join(set(product_names))  # Убираем дубликаты
+            # Обрезаем до 9 символов
+            product_name = product_name[:9] if len(product_name) > 9 else product_name
+            total_quantity = sum(item['quantity'] for item in order_items)
+        else:
+            product_name = "Нет товаров"
+            total_quantity = 0
+        
+        # Заполняем данные
+        ws.cell(row=row, column=1).value = row_number  # Номер строки
+        ws.cell(row=row, column=2).value = order['order_number']
+        ws.cell(row=row, column=3).value = masked_phone
+        ws.cell(row=row, column=4).value = masked_name
+        ws.cell(row=row, column=5).value = product_name
+        ws.cell(row=row, column=6).value = total_quantity
+        ws.cell(row=row, column=7).value = int(order['total_amount'])
+        ws.cell(row=row, column=7).number_format = '#,##0'
+        
+        # Применяем границы
+        for col in range(1, 8):
+            ws.cell(row=row, column=col).border = border
+        
+        row += 1
+        row_number += 1
+    
+    # Заполняем правый столбец (продолжаем нумерацию с левой таблицы)
+    row = 2
+    # Продолжаем нумерацию с того места, где закончилась левая таблица
+    row_number = len(orders_left) + 1
+    for order in orders_right:
+        # Маскируем данные
+        masked_name = qr_code.mask_name_channel(order['full_name'])
+        masked_phone = qr_code.mask_phone_channel(order['phone_number'])
+        
+        # Получаем товары заказа
+        order_items = database.get_order_items(order['order_id'])
+        if order_items:
+            # Берем первый товар (или объединяем если несколько)
+            product_names = [item['product_name'] for item in order_items]
+            product_name = ", ".join(set(product_names))  # Убираем дубликаты
+            # Обрезаем до 9 символов
+            product_name = product_name[:9] if len(product_name) > 9 else product_name
+            total_quantity = sum(item['quantity'] for item in order_items)
+        else:
+            product_name = "Нет товаров"
+            total_quantity = 0
+        
+        # Заполняем данные (начинаем с колонки I, т.е. колонка 9)
+        ws.cell(row=row, column=9).value = row_number  # Номер строки
+        ws.cell(row=row, column=10).value = order['order_number']
+        ws.cell(row=row, column=11).value = masked_phone
+        ws.cell(row=row, column=12).value = masked_name
+        ws.cell(row=row, column=13).value = product_name
+        ws.cell(row=row, column=14).value = total_quantity
+        ws.cell(row=row, column=15).value = int(order['total_amount'])
+        ws.cell(row=row, column=15).number_format = '#,##0'
+        
+        # Применяем границы
+        for col in range(9, 16):
+            ws.cell(row=row, column=col).border = border
+        
+        row += 1
+        row_number += 1
+    
+    # Настраиваем ширину колонок
+    column_widths = {
+        'A': 5,   # № (номер строки)
+        'B': 12,  # Н-номер заказ
+        'C': 15,  # тел-телефон
+        'D': 20,  # фио
+        'E': 9,   # товар (9 символов)
+        'F': 12,  # я-количество
+        'G': 15,  # сум-сумма заказа
+        'H': 2,   # Пустая колонка между столбцами
+        'I': 5,   # № (номер строки)
+        'J': 12,  # Н-номер заказ
+        'K': 15,  # тел-телефон
+        'L': 20,  # фио
+        'M': 9,   # товар (9 символов)
+        'N': 12,  # я-количество
+        'O': 15,  # сум-сумма заказа
+    }
+    
+    for col_letter, width in column_widths.items():
+        ws.column_dimensions[col_letter].width = width
+    
+    # Сохраняем в байты
+    excel_bytes = io.BytesIO()
+    wb.save(excel_bytes)
+    excel_bytes.seek(0)
+    
+    return excel_bytes
+
+
+def generate_full_data_report_excel(session_id: int) -> io.BytesIO:
+    """Генерирует Excel отчет с полными данными (без маскировки) в формате двух столбцов"""
+    session = database.get_session(session_id)
+    if not session:
+        raise ValueError("Сессия не найдена")
+    
+    # Получаем данные
+    orders = database.get_session_orders(session_id)
+    
+    # Создаем рабочую книгу
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Отчет с полными данными"
+    
+    # Стили
+    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    center_align = Alignment(horizontal='center', vertical='center')
+    
+    # Заголовки для первого столбца (колонки A-G)
+    headers_left = ["№", "осн", "тел", "фио", "тов", "я", "сум"]
+    for col, header in enumerate(headers_left, 1):
+        cell = ws.cell(row=1, column=col)
+        cell.value = header
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_align
+        cell.border = border
+    
+    # Заголовки для второго столбца (колонки I-O)
+    headers_right = ["№", "осн", "тел", "фио", "тов", "я", "сум"]
+    for col, header in enumerate(headers_right, 1):
+        cell = ws.cell(row=1, column=col + 8)  # +8 чтобы начать с колонки I (9-я колонка)
+        cell.value = header
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_align
+        cell.border = border
+    
+    # Разделяем заказы на две части для двух столбцов
+    total_orders = len(orders)
+    mid_point = (total_orders + 1) // 2  # Округляем вверх
+    
+    orders_left = orders[:mid_point]
+    orders_right = orders[mid_point:]
+    
+    # Заполняем левый столбец
+    row = 2
+    row_number = 1
+    for order in orders_left:
+        # Используем полные данные без маскировки
+        full_name = order['full_name'] or ""
+        full_phone = order['phone_number'] or ""
+        
+        # Получаем товары заказа
+        order_items = database.get_order_items(order['order_id'])
+        if order_items:
+            # Берем первый товар (или объединяем если несколько)
+            product_names = [item['product_name'] for item in order_items]
+            product_name = ", ".join(set(product_names))  # Убираем дубликаты
+            # Обрезаем до 9 символов
+            product_name = product_name[:9] if len(product_name) > 9 else product_name
+            total_quantity = sum(item['quantity'] for item in order_items)
+        else:
+            product_name = "Нет товаров"
+            total_quantity = 0
+        
+        # Заполняем данные
+        # Используем номер по сессии, если есть, иначе порядковый номер строки
+        session_num = order.get('session_order_number') or row_number
+        ws.cell(row=row, column=1).value = session_num  # Номер по сессии (или порядковый номер)
+        ws.cell(row=row, column=2).value = order['order_number']  # Основной номер
+        ws.cell(row=row, column=3).value = full_phone
+        ws.cell(row=row, column=4).value = full_name
+        ws.cell(row=row, column=5).value = product_name
+        ws.cell(row=row, column=6).value = total_quantity
+        ws.cell(row=row, column=7).value = int(order['total_amount'])
+        ws.cell(row=row, column=7).number_format = '#,##0'
+        
+        # Применяем границы
+        for col in range(1, 8):
+            ws.cell(row=row, column=col).border = border
+        
+        row += 1
+        row_number += 1
+    
+    # Заполняем правый столбец (продолжаем нумерацию с левой таблицы)
+    row = 2
+    # Продолжаем нумерацию с того места, где закончилась левая таблица
+    row_number = len(orders_left) + 1
+    for order in orders_right:
+        # Используем полные данные без маскировки
+        full_name = order['full_name'] or ""
+        full_phone = order['phone_number'] or ""
+        
+        # Получаем товары заказа
+        order_items = database.get_order_items(order['order_id'])
+        if order_items:
+            # Берем первый товар (или объединяем если несколько)
+            product_names = [item['product_name'] for item in order_items]
+            product_name = ", ".join(set(product_names))  # Убираем дубликаты
+            # Обрезаем до 9 символов
+            product_name = product_name[:9] if len(product_name) > 9 else product_name
+            total_quantity = sum(item['quantity'] for item in order_items)
+        else:
+            product_name = "Нет товаров"
+            total_quantity = 0
+        
+        # Заполняем данные (начинаем с колонки I, т.е. колонка 9)
+        # Используем номер по сессии, если есть, иначе порядковый номер строки
+        session_num = order.get('session_order_number') or row_number
+        ws.cell(row=row, column=9).value = session_num  # Номер по сессии (или порядковый номер)
+        ws.cell(row=row, column=10).value = order['order_number']  # Основной номер
+        ws.cell(row=row, column=11).value = full_phone
+        ws.cell(row=row, column=12).value = full_name
+        ws.cell(row=row, column=13).value = product_name
+        ws.cell(row=row, column=14).value = total_quantity
+        ws.cell(row=row, column=15).value = int(order['total_amount'])
+        ws.cell(row=row, column=15).number_format = '#,##0'
+        
+        # Применяем границы
+        for col in range(9, 16):
+            ws.cell(row=row, column=col).border = border
+        
+        row += 1
+        row_number += 1
+    
+    # Настраиваем ширину колонок
+    column_widths = {
+        'A': 5,   # № (номер строки)
+        'B': 12,  # Н-номер заказ
+        'C': 18,  # тел-телефон (полный номер)
+        'D': 25,  # фио (полное ФИО)
+        'E': 9,   # товар (9 символов)
+        'F': 12,  # я-количество
+        'G': 15,  # сум-сумма заказа
+        'H': 2,   # Пустая колонка между столбцами
+        'I': 5,   # № (номер строки)
+        'J': 12,  # Н-номер заказ
+        'K': 18,  # тел-телефон (полный номер)
+        'L': 25,  # фио (полное ФИО)
+        'M': 9,   # товар (9 символов)
+        'N': 12,  # я-количество
+        'O': 15,  # сум-сумма заказа
+    }
+    
+    for col_letter, width in column_widths.items():
+        ws.column_dimensions[col_letter].width = width
+    
+    # Устанавливаем вертикальную ориентацию страницы (портретная) для формата A4
+    ws.page_setup.orientation = 'portrait'
+    ws.page_setup.paperSize = 9  # A4 paper size
+    
+    # Сохраняем в байты
+    excel_bytes = io.BytesIO()
+    wb.save(excel_bytes)
+    excel_bytes.seek(0)
+    
+    return excel_bytes
+
+
+def generate_full_data_report_html(session_id: int) -> str:
+    """Генерирует HTML страницу с таблицей с полными данными (без маскировки)"""
+    session = database.get_session(session_id)
+    if not session:
+        raise ValueError("Сессия не найдена")
+    
+    # Получаем данные
+    orders = database.get_session_orders(session_id)
+    
+    # Используем полные данные без маскировки
+    full_orders = []
+    for order in orders:
+        full_name = order['full_name'] or ""
+        full_phone = order['phone_number'] or ""
+        
+        # Получаем товары заказа
+        order_items = database.get_order_items(order['order_id'])
+        if order_items:
+            product_names = [item['product_name'] for item in order_items]
+            product_name = ", ".join(set(product_names))
+            # Обрезаем до 9 символов
+            product_name = product_name[:9] if len(product_name) > 9 else product_name
+            total_quantity = sum(item['quantity'] for item in order_items)
+        else:
+            product_name = "Нет товаров"
+            total_quantity = 0
+        
+        full_orders.append({
+            'order_number': order['order_number'],  # Основной номер
+            'session_order_number': order.get('session_order_number') or '',  # Номер по сессии
+            'phone': full_phone,
+            'name': full_name,
+            'product': product_name,
+            'quantity': total_quantity,
+            'amount': int(order['total_amount'])
+        })
+    
+    # Разделяем на две части
+    mid_point = (len(full_orders) + 1) // 2
+    orders_left = full_orders[:mid_point]
+    orders_right = full_orders[mid_point:]
+    
+    # Генерируем HTML
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Полный отчет - {session['session_name']}</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }}
+        .container {{
+            display: flex;
+            gap: 20px;
+            justify-content: space-between;
+        }}
+        .table-section {{
+            flex: 1;
+            background-color: white;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }}
+        th {{
+            background-color: #366092;
+            color: white;
+            padding: 8px;
+            text-align: center;
+            font-weight: bold;
+            border: 1px solid #ddd;
+        }}
+        td {{
+            padding: 6px;
+            text-align: center;
+            border: 1px solid #ddd;
+        }}
+        tr:nth-child(even) {{
+            background-color: #f9f9f9;
+        }}
+        .header {{
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 18px;
+            font-weight: bold;
+        }}
+    </style>
+</head>
+<body>
+    <div class="header">Полный отчет: {session['session_name']}</div>
+    <div class="container">
+        <div class="table-section">
+            <table>
+                <thead>
+                    <tr>
+                        <th>№</th>
+                        <th>осн</th>
+                        <th>тел</th>
+                        <th>фио</th>
+                        <th>тов</th>
+                        <th>я</th>
+                        <th>сум</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+    
+    # Левая таблица
+    row_number = 1
+    for order in orders_left:
+        # Используем номер по сессии, если есть, иначе порядковый номер строки
+        session_num = order.get('session_order_number') or row_number
+        html += f"""                    <tr>
+                        <td>{session_num}</td>
+                        <td>{order['order_number']}</td>
+                        <td>{order['phone']}</td>
+                        <td>{order['name']}</td>
+                        <td>{order['product']}</td>
+                        <td>{order['quantity']}</td>
+                        <td>{order['amount']}</td>
+                    </tr>
+"""
+        row_number += 1
+    
+    html += """                </tbody>
+            </table>
+        </div>
+        <div class="table-section">
+            <table>
+                <thead>
+                    <tr>
+                        <th>№</th>
+                        <th>осн</th>
+                        <th>тел</th>
+                        <th>фио</th>
+                        <th>тов</th>
+                        <th>я</th>
+                        <th>сум</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+    
+    # Правая таблица (продолжаем нумерацию с левой таблицы)
+    row_number = len(orders_left) + 1
+    for order in orders_right:
+        # Используем номер по сессии, если есть, иначе порядковый номер строки
+        session_num = order.get('session_order_number') or row_number
+        html += f"""                    <tr>
+                        <td>{session_num}</td>
+                        <td>{order['order_number']}</td>
+                        <td>{order['phone']}</td>
+                        <td>{order['name']}</td>
+                        <td>{order['product']}</td>
+                        <td>{order['quantity']}</td>
+                        <td>{order['amount']}</td>
+                    </tr>
+"""
+        row_number += 1
+    
+    html += """                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>"""
+    
+    return html
+
+
+def generate_channel_report_html(session_id: int) -> str:
+    """Генерирует HTML страницу с таблицей для канала с маскировкой данных"""
+    session = database.get_session(session_id)
+    if not session:
+        raise ValueError("Сессия не найдена")
+    
+    # Получаем данные
+    orders = database.get_session_orders(session_id)
+    
+    # Маскируем данные
+    masked_orders = []
+    for order in orders:
+        masked_name = qr_code.mask_name_channel(order['full_name'])
+        masked_phone = qr_code.mask_phone_channel(order['phone_number'])
+        
+        # Получаем товары заказа
+        order_items = database.get_order_items(order['order_id'])
+        if order_items:
+            product_names = [item['product_name'] for item in order_items]
+            product_name = ", ".join(set(product_names))
+            # Обрезаем до 9 символов
+            product_name = product_name[:9] if len(product_name) > 9 else product_name
+            total_quantity = sum(item['quantity'] for item in order_items)
+        else:
+            product_name = "Нет товаров"
+            total_quantity = 0
+        
+        masked_orders.append({
+            'order_number': order['order_number'],
+            'phone': masked_phone,
+            'name': masked_name,
+            'product': product_name,
+            'quantity': total_quantity,
+            'amount': int(order['total_amount'])
+        })
+    
+    # Разделяем на две части
+    mid_point = (len(masked_orders) + 1) // 2
+    orders_left = masked_orders[:mid_point]
+    orders_right = masked_orders[mid_point:]
+    
+    # Генерируем HTML
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Отчет для канала - {session['session_name']}</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }}
+        .container {{
+            display: flex;
+            gap: 20px;
+            justify-content: space-between;
+        }}
+        .table-section {{
+            flex: 1;
+            background-color: white;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }}
+        th {{
+            background-color: #366092;
+            color: white;
+            padding: 8px;
+            text-align: center;
+            font-weight: bold;
+            border: 1px solid #ddd;
+        }}
+        td {{
+            padding: 6px;
+            text-align: center;
+            border: 1px solid #ddd;
+        }}
+        tr:nth-child(even) {{
+            background-color: #f9f9f9;
+        }}
+        .header {{
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 18px;
+            font-weight: bold;
+        }}
+    </style>
+</head>
+<body>
+    <div class="header">Отчет для канала: {session['session_name']}</div>
+    <div class="container">
+        <div class="table-section">
+            <table>
+                <thead>
+                    <tr>
+                        <th>№</th>
+                        <th>н</th>
+                        <th>тел</th>
+                        <th>фио</th>
+                        <th>тов</th>
+                        <th>я</th>
+                        <th>сум</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+    
+    # Левая таблица
+    row_number = 1
+    for order in orders_left:
+        html += f"""                    <tr>
+                        <td>{row_number}</td>
+                        <td>{order['order_number']}</td>
+                        <td>{order['phone']}</td>
+                        <td>{order['name']}</td>
+                        <td>{order['product']}</td>
+                        <td>{order['quantity']}</td>
+                        <td>{order['amount']}</td>
+                    </tr>
+"""
+        row_number += 1
+    
+    html += """                </tbody>
+            </table>
+        </div>
+        <div class="table-section">
+            <table>
+                <thead>
+                    <tr>
+                        <th>№</th>
+                        <th>н</th>
+                        <th>тел</th>
+                        <th>фио</th>
+                        <th>тов</th>
+                        <th>я</th>
+                        <th>сум</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+    
+    # Правая таблица (продолжаем нумерацию с левой таблицы)
+    row_number = len(orders_left) + 1
+    for order in orders_right:
+        html += f"""                    <tr>
+                        <td>{row_number}</td>
+                        <td>{order['order_number']}</td>
+                        <td>{order['phone']}</td>
+                        <td>{order['name']}</td>
+                        <td>{order['product']}</td>
+                        <td>{order['quantity']}</td>
+                        <td>{order['amount']}</td>
+                    </tr>
+"""
+        row_number += 1
+    
+    html += """                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>"""
+    
+    return html
+
+
+async def generate_channel_report_screenshot(session_id: int) -> io.BytesIO:
+    """Генерирует скриншот таблицы для канала из браузера"""
+    try:
+        from playwright.async_api import async_playwright
+        import tempfile
+        import os
+        
+        # Генерируем HTML
+        html_content = generate_channel_report_html(session_id)
+        
+        # Создаем временный HTML файл
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
+            f.write(html_content)
+            temp_html_path = f.name
+        
+        try:
+            # Используем Playwright для скриншота
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
+                
+                # Загружаем HTML файл
+                file_url = f"file://{temp_html_path}"
+                await page.goto(file_url, wait_until='networkidle')
+                
+                # Делаем полный скриншот страницы
+                screenshot_bytes = await page.screenshot(full_page=True, type='png')
+                
+                await browser.close()
+            
+            # Сохраняем в BytesIO
+            screenshot_io = io.BytesIO(screenshot_bytes)
+            screenshot_io.seek(0)
+            
+            return screenshot_io
+        finally:
+            # Удаляем временный файл
+            if os.path.exists(temp_html_path):
+                os.unlink(temp_html_path)
+    except ImportError:
+        raise ImportError("Playwright не установлен. Установите его командой: playwright install chromium")
+    except Exception as e:
+        raise Exception(f"Ошибка при создании скриншота: {str(e)}")
+
+
+async def generate_full_data_report_screenshot(session_id: int) -> io.BytesIO:
+    """Генерирует скриншот таблицы с полными данными из браузера"""
+    try:
+        from playwright.async_api import async_playwright
+        import tempfile
+        import os
+        
+        # Генерируем HTML
+        html_content = generate_full_data_report_html(session_id)
+        
+        # Создаем временный HTML файл
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
+            f.write(html_content)
+            temp_html_path = f.name
+        
+        try:
+            # Используем Playwright для скриншота
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
+                
+                # Загружаем HTML файл
+                file_url = f"file://{temp_html_path}"
+                await page.goto(file_url, wait_until='networkidle')
+                
+                # Делаем полный скриншот страницы
+                screenshot_bytes = await page.screenshot(full_page=True, type='png')
+                
+                await browser.close()
+            
+            # Сохраняем в BytesIO
+            screenshot_io = io.BytesIO(screenshot_bytes)
+            screenshot_io.seek(0)
+            
+            return screenshot_io
+        finally:
+            # Удаляем временный файл
+            if os.path.exists(temp_html_path):
+                os.unlink(temp_html_path)
+    except ImportError:
+        raise ImportError("Playwright не установлен. Установите его командой: playwright install chromium")
+    except Exception as e:
+        raise Exception(f"Ошибка при создании скриншота: {str(e)}")
+
+
+def generate_pending_orders_html(session_id: int) -> str:
+    """Генерирует HTML страницу с таблицей не выданных заказов"""
+    session = database.get_session(session_id)
+    if not session:
+        raise ValueError("Сессия не найдена")
+    
+    # Получаем все заказы сессии
+    all_orders = database.get_session_orders(session_id)
+    
+    # Фильтруем только не выданные заказы (статус != 'completed' и != 'cancelled')
+    pending_orders = [o for o in all_orders if o['status'] != 'completed' and o['status'] != 'cancelled']
+    
+    if not pending_orders:
+        return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Не выданные заказы - {session['session_name']}</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+            text-align: center;
+        }}
+        .header {{
+            font-size: 24px;
+            font-weight: bold;
+            margin: 50px 0;
+        }}
+    </style>
+</head>
+<body>
+    <div class="header">Не выданные заказы: {session['session_name']}</div>
+    <div style="font-size: 18px; margin-top: 50px;">Нет не выданных заказов</div>
+</body>
+</html>"""
+    
+    # Используем полные данные без маскировки
+    full_orders = []
+    for order in pending_orders:
+        full_name = order['full_name'] or ""
+        full_phone = order['phone_number'] or ""
+        
+        # Получаем товары заказа
+        order_items = database.get_order_items(order['order_id'])
+        if order_items:
+            product_names = [item['product_name'] for item in order_items]
+            product_name = ", ".join(set(product_names))
+            # Обрезаем до 9 символов
+            product_name = product_name[:9] if len(product_name) > 9 else product_name
+            total_quantity = sum(item['quantity'] for item in order_items)
+        else:
+            product_name = "Нет товаров"
+            total_quantity = 0
+        
+        # Используем номер по сессии, если есть, иначе порядковый номер
+        session_num = order.get('session_order_number') or len(full_orders) + 1
+        
+        full_orders.append({
+            'order_number': order['order_number'],  # Основной номер
+            'session_order_number': session_num,  # Номер по сессии
+            'phone': full_phone,
+            'name': full_name,
+            'product': product_name,
+            'quantity': total_quantity,
+            'amount': int(order['total_amount']),
+            'status': order['status']
+        })
+    
+    # Разделяем на две части
+    mid_point = (len(full_orders) + 1) // 2
+    orders_left = full_orders[:mid_point]
+    orders_right = full_orders[mid_point:]
+    
+    # Генерируем HTML
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Не выданные заказы - {session['session_name']}</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }}
+        .container {{
+            display: flex;
+            gap: 20px;
+            justify-content: space-between;
+        }}
+        .table-section {{
+            flex: 1;
+            background-color: white;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }}
+        th {{
+            background-color: #366092;
+            color: white;
+            padding: 8px;
+            text-align: center;
+            font-weight: bold;
+            border: 1px solid #ddd;
+        }}
+        td {{
+            padding: 6px;
+            text-align: center;
+            border: 1px solid #ddd;
+        }}
+        tr:nth-child(even) {{
+            background-color: #f9f9f9;
+        }}
+        .header {{
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 18px;
+            font-weight: bold;
+        }}
+    </style>
+</head>
+<body>
+    <div class="header">Не выданные заказы: {session['session_name']}</div>
+    <div class="container">
+        <div class="table-section">
+            <table>
+                <thead>
+                    <tr>
+                        <th>№</th>
+                        <th>осн</th>
+                        <th>тел</th>
+                        <th>фио</th>
+                        <th>тов</th>
+                        <th>я</th>
+                        <th>сум</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+    
+    # Левая таблица
+    row_number = 1
+    for order in orders_left:
+        html += f"""                    <tr>
+                        <td>{order['session_order_number']}</td>
+                        <td>{order['order_number']}</td>
+                        <td>{order['phone']}</td>
+                        <td>{order['name']}</td>
+                        <td>{order['product']}</td>
+                        <td>{order['quantity']}</td>
+                        <td>{order['amount']}</td>
+                    </tr>
+"""
+        row_number += 1
+    
+    html += """                </tbody>
+            </table>
+        </div>
+        <div class="table-section">
+            <table>
+                <thead>
+                    <tr>
+                        <th>№</th>
+                        <th>осн</th>
+                        <th>тел</th>
+                        <th>фио</th>
+                        <th>тов</th>
+                        <th>я</th>
+                        <th>сум</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+    
+    # Правая таблица (продолжаем нумерацию с левой таблицы)
+    row_number = len(orders_left) + 1
+    for order in orders_right:
+        html += f"""                    <tr>
+                        <td>{order['session_order_number']}</td>
+                        <td>{order['order_number']}</td>
+                        <td>{order['phone']}</td>
+                        <td>{order['name']}</td>
+                        <td>{order['product']}</td>
+                        <td>{order['quantity']}</td>
+                        <td>{order['amount']}</td>
+                    </tr>
+"""
+        row_number += 1
+    
+    html += """                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>"""
+    
+    return html
+
+
+async def generate_pending_orders_screenshot(session_id: int) -> io.BytesIO:
+    """Генерирует скриншот таблицы не выданных заказов"""
+    try:
+        from playwright.async_api import async_playwright
+        import tempfile
+        import os
+        
+        # Генерируем HTML
+        html_content = generate_pending_orders_html(session_id)
+        
+        # Создаем временный HTML файл
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
+            f.write(html_content)
+            temp_html_path = f.name
+        
+        try:
+            # Используем Playwright для скриншота
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
+                
+                # Загружаем HTML файл
+                file_url = f"file://{temp_html_path}"
+                await page.goto(file_url, wait_until='networkidle')
+                
+                # Делаем полный скриншот страницы
+                screenshot_bytes = await page.screenshot(full_page=True, type='png')
+                
+                await browser.close()
+            
+            # Сохраняем в BytesIO
+            screenshot_io = io.BytesIO(screenshot_bytes)
+            screenshot_io.seek(0)
+            
+            return screenshot_io
+        finally:
+            # Удаляем временный файл
+            if os.path.exists(temp_html_path):
+                os.unlink(temp_html_path)
+    except ImportError:
+        raise ImportError("Playwright не установлен. Установите его командой: playwright install chromium")
+    except Exception as e:
+        raise Exception(f"Ошибка при создании скриншота: {str(e)}")

@@ -12,8 +12,8 @@ def get_cabinet_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
-def get_cart_sessions_keyboard(orders: list) -> InlineKeyboardMarkup:
-    """Создает клавиатуру с сессиями, в которых есть незавершенные заказы"""
+def get_cart_sessions_keyboard(orders: list, back_callback: str = "main_cabinet") -> InlineKeyboardMarkup:
+    """Создает клавиатуру с сессиями, в которых есть заказы"""
     keyboard = []
     
     # Группируем заказы по сессиям
@@ -37,20 +37,27 @@ def get_cart_sessions_keyboard(orders: list) -> InlineKeyboardMarkup:
             )
         ])
     
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="main_cabinet")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=back_callback)])
     return InlineKeyboardMarkup(keyboard)
 
 
-def get_cart_orders_keyboard(session_id: int, orders: list) -> InlineKeyboardMarkup:
-    """Создает клавиатуру с заказами в корзине для конкретной сессии"""
+def get_cart_orders_keyboard(session_id: int, orders: list, back_callback: str = "cabinet_cart") -> InlineKeyboardMarkup:
+    """Создает клавиатуру с заказами для конкретной сессии"""
     keyboard = []
     for order in orders:
+        # Показываем код заказа и номер из таблицы (номер по сессии)
+        order_code = order['order_number']
+        table_number = order.get('session_order_number', '—')
+        # Заменяем "Ожидает обработки" на "Активен"
+        status_display = database.get_order_status_ru(order['status'])
+        if status_display == "Ожидает обработки":
+            status_display = "Активен"
         keyboard.append([
             InlineKeyboardButton(
-                f"Заказ #{order['order_number']} - {database.get_order_status_ru(order['status'])}",
+                f"Заказ №{table_number} (код: {order_code}) - {status_display}",
                 callback_data=f"cabinet_order_{order['order_id']}"
             )
         ])
     
-    keyboard.append([InlineKeyboardButton("🔙 Назад к корзине", callback_data="cabinet_cart")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=back_callback)])
     return InlineKeyboardMarkup(keyboard)

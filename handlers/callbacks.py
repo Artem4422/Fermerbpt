@@ -103,6 +103,77 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
     
+    elif callback_data == "main_orders":
+        # Заказы — показываем только не выданные заказы (как корзина)
+        if not database.is_admin(user_id) and not database.is_manager(user_id) and not database.is_registered(user_id):
+            from keyboards.main import get_back_to_start_keyboard
+            await query.edit_message_text(
+                "📋 Заказы\n\n"
+                "Для просмотра заказов нужно пройти регистрацию.\n\n"
+                "Нажмите /start и введите номер телефона и ФИО.",
+                reply_markup=get_back_to_start_keyboard()
+            )
+            return
+        
+        # Получаем только не выданные заказы пользователя
+        pending_orders = database.get_user_pending_orders(user_id)
+        
+        # Фильтруем заказы, у которых сессия существует
+        valid_orders = []
+        for order in pending_orders:
+            session = database.get_session(order['session_id'])
+            if session:
+                valid_orders.append(order)
+        
+        if valid_orders:
+            from keyboards.cabinet import get_cart_sessions_keyboard
+            # Используем ту же клавиатуру, что и для корзины, но с возвратом в главное меню
+            orders_keyboard = get_cart_sessions_keyboard(valid_orders, back_callback="main_menu")
+            
+            # Группируем по сессиям для отображения
+            sessions_dict = {}
+            for order in valid_orders:
+                session_id = order['session_id']
+                if session_id not in sessions_dict:
+                    sessions_dict[session_id] = {
+                        'session_name': order['session_name'],
+                        'orders': []
+                    }
+                sessions_dict[session_id]['orders'].append(order)
+            
+            orders_text = "📋 Ваши заказы\n\n"
+            orders_text += "Не выданные заказы по сессиям:\n\n"
+            
+            for session_id, session_data in sessions_dict.items():
+                orders_text += f"📦 {session_data['session_name']}:\n"
+                for order in session_data['orders']:
+                    # Показываем номер заказа (из таблицы) и код заказа (основной номер)
+                    table_number = order.get('session_order_number', '—')
+                    order_code = order['order_number']
+                    # Заменяем "Ожидает обработки" на "Активен"
+                    status_display = database.get_order_status_ru(order['status'])
+                    if status_display == "Ожидает обработки":
+                        status_display = "Активен"
+                    orders_text += f"  • Заказ №{table_number} (код: {order_code}) - {status_display}\n"
+                    orders_text += f"    Товары: {order['items']}\n"
+                    orders_text += f"    Сумма: {order['total_amount']:.2f}₽\n\n"
+            
+            await safe_edit_message_text(
+                query,
+                orders_text,
+                reply_markup=orders_keyboard
+            )
+        else:
+            from keyboards.main import get_main_keyboard
+            main_keyboard = get_main_keyboard()
+            await safe_edit_message_text(
+                query,
+                "📋 Ваши заказы\n\n"
+                "У вас нет не выданных заказов.",
+                reply_markup=main_keyboard
+            )
+        return
+    
     elif callback_data == "cabinet_edit_profile":
         # Редактирование телефона и ФИО
         context.user_data['editing_profile'] = {'step': 'phone'}
@@ -116,13 +187,20 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         # Корзина со всеми незавершенными заказами
         pending_orders = database.get_user_pending_orders(user_id)
         
-        if pending_orders:
+        # Фильтруем заказы, у которых сессия существует
+        valid_orders = []
+        for order in pending_orders:
+            session = database.get_session(order['session_id'])
+            if session:
+                valid_orders.append(order)
+        
+        if valid_orders:
             from keyboards.cabinet import get_cart_sessions_keyboard
-            cart_keyboard = get_cart_sessions_keyboard(pending_orders)
+            cart_keyboard = get_cart_sessions_keyboard(valid_orders)
             
             # Группируем по сессиям для отображения
             sessions_dict = {}
-            for order in pending_orders:
+            for order in valid_orders:
                 session_id = order['session_id']
                 if session_id not in sessions_dict:
                     sessions_dict[session_id] = {
@@ -137,7 +215,14 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             for session_id, session_data in sessions_dict.items():
                 cart_text += f"📦 {session_data['session_name']}:\n"
                 for order in session_data['orders']:
-                    cart_text += f"  • Заказ #{order['order_number']} - {database.get_order_status_ru(order['status'])}\n"
+                    # Показываем номер заказа (из таблицы) и код заказа (основной номер)
+                    table_number = order.get('session_order_number', '—')
+                    order_code = order['order_number']
+                    # Заменяем "Ожидает обработки" на "Активен"
+                    status_display = database.get_order_status_ru(order['status'])
+                    if status_display == "Ожидает обработки":
+                        status_display = "Активен"
+                    cart_text += f"  • Заказ №{table_number} (код: {order_code}) - {status_display}\n"
                     cart_text += f"    Товары: {order['items']}\n"
                     cart_text += f"    Сумма: {order['total_amount']:.2f}₽\n\n"
             
@@ -156,22 +241,40 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     elif callback_data.startswith("cabinet_cart_session_"):
-        # Заказы конкретной сессии
+        # Заказы конкретной сессии (используется и для корзины, и для заказов)
         session_id = int(callback_data.split("_")[-1])
+        
+        # Проверяем, существует ли сессия
+        session = database.get_session(session_id)
+        if not session:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
+            return
+        
+        # Получаем не выданные заказы пользователя в этой сессии
         pending_orders = database.get_user_pending_orders(user_id)
         session_orders = [o for o in pending_orders if o['session_id'] == session_id]
         
         if session_orders:
             from keyboards.cabinet import get_cart_orders_keyboard
-            orders_keyboard = get_cart_orders_keyboard(session_id, session_orders)
+            # Определяем callback для возврата - если есть незавершенные заказы, возвращаемся в корзину, иначе в заказы
+            has_pending_in_session = len(session_orders) > 0
+            back_callback = "cabinet_cart" if has_pending_in_session else "main_orders"
             
-            session_name = session_orders[0]['session_name'] if session_orders else "Неизвестная сессия"
+            orders_keyboard = get_cart_orders_keyboard(session_id, session_orders, back_callback)
+            
+            session_name = session['session_name']
             orders_text = f"📦 {session_name}\n\n"
             orders_text += "Ваши заказы:\n\n"
             
             for order in session_orders:
-                orders_text += f"Заказ #{order['order_number']}\n"
-                orders_text += f"Статус: {database.get_order_status_ru(order['status'])}\n"
+                # Показываем номер заказа (из таблицы) и код заказа (основной номер)
+                table_number = order.get('session_order_number', '—')
+                order_code = order['order_number']
+                # Заменяем "Ожидает обработки" на "Активен"
+                status_display = database.get_order_status_ru(order['status'])
+                if status_display == "Ожидает обработки":
+                    status_display = "Активен"
+                orders_text += f"Заказ №{table_number} (код: {order_code}) - {status_display}\n"
                 orders_text += f"Товары: {order['items']}\n"
                 orders_text += f"Сумма: {order['total_amount']:.2f}₽\n"
                 orders_text += f"Дата: {order['created_at']}\n\n"
@@ -190,8 +293,13 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         order = database.get_order(order_id)
         
         if order and order['user_id'] == user_id:
-            order_items = database.get_order_items(order_id)
+            # Проверяем, существует ли сессия
             session = database.get_session(order['session_id'])
+            if not session:
+                await query.answer("❌ Сессия заказа не найдена!", show_alert=True)
+                return
+            
+            order_items = database.get_order_items(order_id)
             
             items_text = "\n".join([
                 f"• {item['product_name']} x{item['quantity']} = {item['quantity'] * item['price']:.2f}₽"
@@ -199,13 +307,23 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             ])
             
             from keyboards.cabinet import get_cart_orders_keyboard
+            # Получаем не выданные заказы сессии для клавиатуры
             pending_orders = database.get_user_pending_orders(user_id)
             session_orders = [o for o in pending_orders if o['session_id'] == order['session_id']]
-            back_keyboard = get_cart_orders_keyboard(order['session_id'], session_orders)
+            
+            # Определяем callback для возврата - если есть незавершенные заказы, возвращаемся в корзину, иначе в заказы
+            has_pending_in_session = len(session_orders) > 0
+            back_callback = "cabinet_cart" if has_pending_in_session else "main_orders"
+            back_keyboard = get_cart_orders_keyboard(order['session_id'], session_orders, back_callback)
+            
+            # Показываем номер заказа (из таблицы) и код заказа (основной номер)
+            table_number = order.get('session_order_number', '—')
+            order_code = order['order_number']
+            order_num_display = f"№{table_number} (код: {order_code})"
             
             await query.edit_message_text(
-                f"📋 Заказ #{order['order_number']}\n\n"
-                f"📦 Сессия: {session['session_name'] if session else 'Не найдена'}\n"
+                f"📋 Заказ {order_num_display}\n\n"
+                f"📦 Сессия: {session['session_name']}\n"
                 f"👤 ФИО: {order['full_name']}\n"
                 f"📱 Телефон: {order['phone_number']}\n"
                 f"📊 Статус: {database.get_order_status_ru(order['status'])}\n"
@@ -454,11 +572,17 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 products_keyboard = get_products_keyboard(purchase_data['session_id'])
                 import qr_code
                 qr_image = qr_code.generate_qr_code(order['order_number'])
+                
+                # Формируем номер заказа для отображения
+                table_number = order.get('session_order_number', '—')
+                order_code = order['order_number']
+                order_num_display = f"№{table_number} (код: {order_code})"
+                
                 await query.message.reply_photo(
                     photo=qr_image,
                     caption=(
                         f"✅ Заказ успешно создан!\n\n"
-                        f"📋 Номер заказа: #{order['order_number']}\n"
+                        f"📋 Номер заказа: {order_num_display}\n"
                         f"📦 Сессия: {session['session_name']}\n"
                         f"👤 ФИО: {order['full_name']}\n"
                         f"📱 Телефон: {order['phone_number']}\n\n"
@@ -1029,6 +1153,20 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             
             stats_message += f"\n👥 Уникальных клиентов: {stats['unique_customers']}"
             
+            # Добавляем информацию о товарах
+            if stats.get('products') and len(stats['products']) > 0:
+                stats_message += "\n\n📦 Товары:\n"
+                for product in stats['products']:
+                    stats_message += (
+                        f"\n🛍️ {product['product_name']}\n"
+                        f"   💰 Цена: {product['price']:.2f}₽ за ящик\n"
+                        f"   📦 Начальное количество: {product['initial_boxes']} ящ.\n"
+                        f"   ✅ Продано: {product['sold_boxes']} ящ.\n"
+                        f"   📊 Остаток: {product['remaining_boxes']} ящ.\n"
+                    )
+            else:
+                stats_message += "\n\n⚠️ Товары в сессии отсутствуют"
+            
             from keyboards.admin import get_admin_keyboard
             keyboard = get_admin_keyboard()
             await query.edit_message_text(stats_message, reply_markup=keyboard)
@@ -1157,9 +1295,42 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             else:
                 raise
     
+    elif callback_data == "admin_channel_report":
+        # Выбор сессии для отчета канала
+        from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+        sessions_keyboard = get_sessions_keyboard_for_admin("channel_report", back_callback="admin_reports")
+        try:
+            await query.edit_message_text(
+                "📺 Отчет для канала\n\n"
+                "Выберите сессию для формирования отчета:",
+                reply_markup=sessions_keyboard
+            )
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                pass
+            else:
+                raise
+    
+    elif callback_data == "admin_full_data_report":
+        # Выбор сессии для полного отчета с полными данными
+        from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+        sessions_keyboard = get_sessions_keyboard_for_admin("full_data_report", back_callback="admin_reports")
+        try:
+            await query.edit_message_text(
+                "📋 Полный отчет (2 столбца)\n\n"
+                "Выберите сессию для формирования отчета с полными данными:",
+                reply_markup=sessions_keyboard
+            )
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                pass
+            else:
+                raise
+    
     elif callback_data.startswith("admin_report_"):
         # Обработка выбора периода отчета
-        period = callback_data.split("_")[-1]  # week, month, year, all_time
+        # Извлекаем период после "admin_report_"
+        period = callback_data.replace("admin_report_", "", 1)  # week, month, year, all_time
         
         await query.edit_message_text("⏳ Формирование отчета...")
         
@@ -1175,9 +1346,11 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             }
             period_name = period_names.get(period, period)
             
+            # Используем datetime из глобального импорта
+            from datetime import datetime as dt_now
             await query.message.reply_document(
                 document=excel_file,
-                filename=f"Отчет_за_{period_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                filename=f"Отчет_за_{period_name}_{dt_now.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 caption=f"📊 Отчет за {period_name}"
             )
             
@@ -1213,12 +1386,13 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             try:
                 # Генерируем Excel отчет
                 import reports
+                from datetime import datetime as dt_now
                 excel_file = reports.generate_session_report_excel(session_id)
                 
                 # Отправляем отчет
                 await query.message.reply_document(
                     document=excel_file,
-                    filename=f"Отчет_Сессия_{session['session_name']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    filename=f"Отчет_Сессия_{session['session_name']}_{dt_now.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                     caption=f"📊 Полный отчет по сессии: {session['session_name']}"
                 )
                 
@@ -1251,12 +1425,148 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     # Обработчики панели менеджера
     elif callback_data == "manager_find_order":
-        # Запрос номера заказа
-        context.user_data['waiting_for_order_number'] = True
+        # Сначала выбираем сессию
+        from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+        sessions_keyboard = get_sessions_keyboard_for_admin("find_order", back_callback="manager_back")
         await query.edit_message_text(
             "🔍 Найти заказ\n\n"
-            "Введите номер заказа:"
+            "Выберите сессию для поиска заказа:",
+            reply_markup=sessions_keyboard
         )
+    
+    elif callback_data.startswith("admin_select_session_find_order_"):
+        # Менеджер выбрал сессию для поиска заказа
+        session_id = int(callback_data.split("_")[-1])
+        session = database.get_session(session_id)
+        
+        if session:
+            context.user_data['finding_order'] = {
+                'session_id': session_id,
+                'step': 'waiting_number'
+            }
+            await query.edit_message_text(
+                f"🔍 Найти заказ - {session['session_name']}\n\n"
+                f"Введите номер заказа (номер по сессии или общий номер):"
+            )
+        else:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
+    
+    elif callback_data == "manager_bulk_complete":
+        # Выбор сессии для массовой выдачи
+        from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+        sessions_keyboard = get_sessions_keyboard_for_admin("bulk_complete", back_callback="manager_back")
+        await query.edit_message_text(
+            "📦 Выдача оптом\n\n"
+            "Выберите сессию для массовой выдачи заказов:",
+            reply_markup=sessions_keyboard
+        )
+    
+    elif callback_data == "manager_pending_table":
+        # Выбор сессии для таблицы не выданных заказов
+        from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+        sessions_keyboard = get_sessions_keyboard_for_admin("pending_table", back_callback="manager_back")
+        await query.edit_message_text(
+            "📋 Таблица не выданных\n\n"
+            "Выберите сессию для генерации таблицы не выданных заказов:",
+            reply_markup=sessions_keyboard
+        )
+    
+    elif callback_data == "manager_notify_pending":
+        # Выбор сессии для оповещения не выданных заказов
+        from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+        sessions_keyboard = get_sessions_keyboard_for_admin("notify_pending", back_callback="manager_back")
+        await query.edit_message_text(
+            "📢 Оповещение не выданных\n\n"
+            "Выберите сессию для отправки оповещения пользователям с не выданными заказами:",
+            reply_markup=sessions_keyboard
+        )
+    
+    elif callback_data == "manager_notify_active":
+        # Выбор сессии для оповещения активных заказов
+        from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+        sessions_keyboard = get_sessions_keyboard_for_admin("notify_active", back_callback="manager_back")
+        await query.edit_message_text(
+            "📢 Оповещение активных\n\n"
+            "Выберите сессию для отправки оповещения пользователям с активными заказами:",
+            reply_markup=sessions_keyboard
+        )
+    
+    elif callback_data.startswith("admin_select_session_notify_pending_"):
+        # Менеджер выбрал сессию для оповещения не выданных
+        session_id = int(callback_data.split("_")[-1])
+        session = database.get_session(session_id)
+        
+        if session:
+            context.user_data['notify_pending'] = {
+                'session_id': session_id,
+                'step': 'waiting_message'
+            }
+            await query.edit_message_text(
+                f"📢 Оповещение не выданных - {session['session_name']}\n\n"
+                f"Введите текст сообщения, которое будет отправлено всем пользователям с не выданными заказами:"
+            )
+        else:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
+    
+    elif callback_data.startswith("admin_select_session_notify_active_"):
+        # Менеджер выбрал сессию для оповещения активных
+        session_id = int(callback_data.split("_")[-1])
+        session = database.get_session(session_id)
+        
+        if session:
+            context.user_data['notify_active'] = {
+                'session_id': session_id,
+                'step': 'waiting_message'
+            }
+            await query.edit_message_text(
+                f"📢 Оповещение активных - {session['session_name']}\n\n"
+                f"Введите текст сообщения, которое будет отправлено всем пользователям с активными заказами:"
+            )
+        else:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
+    
+    elif callback_data.startswith("admin_select_session_pending_table_"):
+        # Генерация таблицы не выданных заказов
+        session_id = int(callback_data.split("_")[-1])
+        session = database.get_session(session_id)
+        
+        if session:
+            await query.edit_message_text("⏳ Генерация таблицы не выданных заказов...")
+            
+            try:
+                import reports
+                screenshot = await reports.generate_pending_orders_screenshot(session_id)
+                
+                await query.message.reply_photo(
+                    photo=screenshot,
+                    caption=f"📋 Таблица не выданных заказов: {session['session_name']}"
+                )
+                await query.edit_message_text(f"✅ Таблица не выданных заказов успешно сформирована!")
+            except Exception as screenshot_error:
+                logger.error(f"Ошибка при создании таблицы не выданных: {screenshot_error}")
+                await query.edit_message_text(
+                    f"❌ Ошибка при создании таблицы: {str(screenshot_error)}\n"
+                    f"Установите Playwright: playwright install chromium"
+                )
+        else:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
+    
+    elif callback_data.startswith("admin_select_session_bulk_complete_"):
+        # Менеджер выбрал сессию для массовой выдачи
+        session_id = int(callback_data.split("_")[-1])
+        session = database.get_session(session_id)
+        
+        if session:
+            context.user_data['bulk_complete'] = {
+                'session_id': session_id,
+                'step': 'waiting_numbers'
+            }
+            await query.edit_message_text(
+                f"📦 Выдача оптом - {session['session_name']}\n\n"
+                f"Введите номера заказов через пробел или запятую (например: 1 11 2 3 5 или 1,2,3,4):"
+            )
+        else:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
     
     elif callback_data == "manager_back":
         # Возврат к панели менеджера
@@ -1283,8 +1593,12 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             from keyboards.manager import get_order_actions_keyboard
             keyboard = get_order_actions_keyboard(order_id)
             
+            order_num_display = f"#{order.get('session_order_number', order['order_number'])}"
+            if order.get('session_order_number'):
+                order_num_display += f" (общий: {order['order_number']})"
+            
             await query.edit_message_text(
-                f"📋 Заказ #{order['order_number']}\n\n"
+                f"📋 Заказ {order_num_display}\n\n"
                 f"📦 Сессия: {session['session_name'] if session else 'Не найдена'}\n"
                 f"👤 ФИО: {order['full_name']}\n"
                 f"📱 Телефон: {order['phone_number']}\n"
@@ -1321,14 +1635,15 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 try:
                     status_text = database.get_order_status_ru(status)
                     
+                    order_num_display = f"#{order.get('session_order_number', order['order_number'])}"
                     if status == 'completed':
                         message_text = (
-                            f"✅ Ваш заказ #{order['order_number']} выдан!\n\n"
+                            f"✅ Ваш заказ {order_num_display} выдан!\n\n"
                             f"Спасибо за покупку!"
                         )
                     else:
                         message_text = (
-                            f"📋 Статус вашего заказа #{order['order_number']} изменен:\n"
+                            f"📋 Статус вашего заказа {order_num_display} изменен:\n"
                             f"{status_text}"
                         )
                     
@@ -1339,8 +1654,9 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 except Exception as e:
                     logger.error(f"Ошибка при отправке уведомления: {e}")
                 
+                order_num_display = f"#{order.get('session_order_number', order['order_number'])}"
                 await query.edit_message_text(
-                    f"✅ Статус заказа #{order['order_number']} успешно изменен на: {database.get_order_status_ru(status)}"
+                    f"✅ Статус заказа {order_num_display} успешно изменен на: {database.get_order_status_ru(status)}"
                 )
             else:
                 await query.edit_message_text("❌ Ошибка при изменении статуса заказа!")
@@ -1353,16 +1669,406 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         order = database.get_order(order_id)
         if order:
             if database.update_order_status(order_id, 'cancelled'):
-                await query.edit_message_text(f"✅ Заказ #{order['order_number']} отклонен!")
+                order_num_display = f"#{order.get('session_order_number', order['order_number'])}"
+                await query.edit_message_text(f"✅ Заказ {order_num_display} отклонен!")
             else:
                 await query.edit_message_text("❌ Ошибка при отклонении заказа!")
         else:
             await query.answer("❌ Заказ не найден!", show_alert=True)
     
-    elif callback_data == "manager_report":
-        # Выбор сессии для отчета
+    elif callback_data == "manager_sales_status":
+        # Показываем список сессий для выбора статуса продаж
         from keyboards.sessions_admin import get_sessions_keyboard_for_admin
-        sessions_keyboard = get_sessions_keyboard_for_admin("report")
+        sessions_keyboard = get_sessions_keyboard_for_admin("sales_status", back_callback="manager_back")
+        await query.edit_message_text(
+            "📊 Статус продаж\n\n"
+            "Выберите сессию для просмотра статистики:",
+            reply_markup=sessions_keyboard
+        )
+    
+    elif callback_data == "manager_reports":
+        # Показываем выбор типа отчета для менеджера
+        from keyboards.reports import get_manager_reports_type_keyboard
+        reports_keyboard = get_manager_reports_type_keyboard()
+        await query.edit_message_text(
+            "📈 Отчеты\n\n"
+            "Выберите тип отчета:",
+            reply_markup=reports_keyboard
+        )
+    
+    elif callback_data == "manager_report_period":
+        # Показываем выбор периода для отчета менеджера
+        from keyboards.reports import get_manager_reports_period_keyboard
+        reports_keyboard = get_manager_reports_period_keyboard()
+        await query.edit_message_text(
+            "📅 Отчет за период\n\n"
+            "Выберите период для формирования отчета:",
+            reply_markup=reports_keyboard
+        )
+    
+    elif callback_data == "manager_report_session":
+        # Выбор сессии для отчета менеджера
+        from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+        sessions_keyboard = get_sessions_keyboard_for_admin("manager_report", back_callback="manager_reports")
+        try:
+            await query.edit_message_text(
+                "📊 Отчет по сессии\n\n"
+                "Выберите сессию для формирования отчета:",
+                reply_markup=sessions_keyboard
+            )
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                pass
+            else:
+                raise
+    
+    elif callback_data == "manager_channel_report":
+        # Выбор сессии для отчета канала менеджера
+        from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+        sessions_keyboard = get_sessions_keyboard_for_admin("manager_channel_report", back_callback="manager_reports")
+        try:
+            await query.edit_message_text(
+                "📺 Отчет для канала\n\n"
+                "Выберите сессию для формирования отчета:",
+                reply_markup=sessions_keyboard
+            )
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                pass
+            else:
+                raise
+    
+    elif callback_data == "manager_full_data_report":
+        # Выбор сессии для полного отчета менеджера
+        from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+        sessions_keyboard = get_sessions_keyboard_for_admin("manager_full_data_report", back_callback="manager_reports")
+        try:
+            await query.edit_message_text(
+                "📋 Полный отчет (2 столбца)\n\n"
+                "Выберите сессию для формирования отчета с полными данными:",
+                reply_markup=sessions_keyboard
+            )
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                pass
+            else:
+                raise
+    
+    elif callback_data.startswith("manager_report_"):
+        # Обработка выбора периода отчета для менеджера
+        period = callback_data.replace("manager_report_", "", 1)  # week, month, year, all_time
+        
+        await query.edit_message_text("⏳ Формирование отчета...")
+        
+        try:
+            import reports
+            from datetime import datetime as dt_now
+            excel_file = reports.generate_period_report_excel(period)
+            
+            period_names = {
+                "week": "неделю",
+                "month": "месяц",
+                "year": "год",
+                "all_time": "все время"
+            }
+            period_name = period_names.get(period, period)
+            
+            await query.message.reply_document(
+                document=excel_file,
+                filename=f"Отчет_за_{period_name}_{dt_now.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                caption=f"📊 Отчет за {period_name}"
+            )
+            
+            await query.edit_message_text(f"✅ Отчет за {period_name} успешно сформирован!")
+        except Exception as e:
+            logger.error(f"Ошибка при формировании отчета: {e}")
+            await query.edit_message_text(
+                f"❌ Ошибка при формировании отчета: {str(e)}"
+            )
+    
+    elif callback_data.startswith("manager_select_session_sales_status_"):
+        # Показываем статистику продаж по сессии для менеджера
+        session_id = int(callback_data.split("_")[-1])
+        session = database.get_session(session_id)
+        
+        if session:
+            stats = database.get_session_sales_stats(session_id)
+            
+            status_text = "✅ Активна" if session.get('is_active') else "❌ Остановлена"
+            
+            stats_message = (
+                f"📊 Статус продаж - {session['session_name']}\n"
+                f"Статус сессии: {status_text}\n\n"
+                f"📦 Всего заказов: {stats['total_orders']}\n"
+                f"✅ Выдано: {stats['completed_orders']}\n"
+                f"⏳ В обработке: {stats['processing_orders']}\n"
+                f"🕐 Ожидает обработки: {stats['pending_orders']}\n"
+                f"❌ Отменено: {stats['cancelled_orders']}\n\n"
+                f"💰 Общая выручка: {stats['total_revenue']:.2f}₽\n"
+                f"📦 Всего продано ящиков: {stats['total_boxes_sold']}\n"
+            )
+            
+            if stats['completed_orders'] > 0:
+                avg_check = stats['total_revenue'] / stats['completed_orders']
+                stats_message += f"💵 Средний чек: {avg_check:.2f}₽\n"
+            
+            stats_message += f"\n👥 Уникальных клиентов: {stats['unique_customers']}"
+            
+            # Добавляем информацию о товарах
+            if stats.get('products') and len(stats['products']) > 0:
+                stats_message += "\n\n📦 Товары:\n"
+                for product in stats['products']:
+                    stats_message += (
+                        f"\n🛍️ {product['product_name']}\n"
+                        f"   💰 Цена: {product['price']:.2f}₽ за ящик\n"
+                        f"   📦 Начальное количество: {product['initial_boxes']} ящ.\n"
+                        f"   ✅ Продано: {product['sold_boxes']} ящ.\n"
+                        f"   📊 Остаток: {product['remaining_boxes']} ящ.\n"
+                    )
+            else:
+                stats_message += "\n\n⚠️ Товары в сессии отсутствуют"
+            
+            from keyboards.manager import get_manager_keyboard
+            keyboard = get_manager_keyboard()
+            await query.edit_message_text(stats_message, reply_markup=keyboard)
+        else:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
+    
+    elif callback_data.startswith("manager_select_session_report_"):
+        # Генерация отчета для сессии менеджера
+        session_id = int(callback_data.split("_")[-1])
+        session = database.get_session(session_id)
+        if session:
+            orders = database.get_session_orders(session_id)
+            
+            # Генерируем текст отчета
+            report_lines = []
+            report_lines.append(f"ОТЧЕТ ПО СЕССИИ: {session['session_name']}")
+            report_lines.append("")
+            report_lines.append(f"Всего заказов: {len(orders)}")
+            report_lines.append("")
+            
+            completed_count = sum(1 for o in orders if o['status'] == 'completed')
+            pending_count = sum(1 for o in orders if o['status'] == 'pending')
+            processing_count = sum(1 for o in orders if o['status'] == 'processing')
+            cancelled_count = sum(1 for o in orders if o['status'] == 'cancelled')
+            
+            report_lines.append(f"Выдано: {completed_count}")
+            report_lines.append(f"Ожидает обработки: {pending_count}")
+            report_lines.append(f"В обработке: {processing_count}")
+            report_lines.append(f"Отменено: {cancelled_count}")
+            report_lines.append("")
+            report_lines.append("=" * 60)
+            report_lines.append("")
+            
+            for order in orders:
+                report_lines.append(f"Заказ #{order['order_number']}")
+                report_lines.append(f"ФИО: {order['full_name']}")
+                report_lines.append(f"Телефон: {order['phone_number']}")
+                report_lines.append(f"Статус: {database.get_order_status_ru(order['status'])}")
+                report_lines.append(f"Товары: {order['items']}")
+                report_lines.append(f"Сумма: {order['total_amount']}₽")
+                report_lines.append(f"Дата: {order['created_at']}")
+                report_lines.append("-" * 60)
+                report_lines.append("")
+            
+            report_text = "\n".join(report_lines)
+            
+            # Генерируем изображения отчета (разбиваем на части)
+            try:
+                from PIL import Image, ImageDraw, ImageFont
+                import io
+                
+                # Параметры изображения
+                img_width = 1000
+                line_height = 25
+                padding = 20
+                max_lines_per_image = 100
+                
+                # Заголовок и статистика
+                header_lines = []
+                header_end_idx = 0
+                separator = "=" * 60
+                for i, line in enumerate(report_lines):
+                    header_lines.append(line)
+                    if line == separator:
+                        header_end_idx = i + 2
+                        break
+                
+                # Заказы
+                if header_end_idx > 0:
+                    order_lines = report_lines[header_end_idx:]
+                else:
+                    order_lines = report_lines[len(header_lines):]
+                
+                # Разбиваем на части
+                image_parts = []
+                
+                if not order_lines:
+                    image_parts.append(header_lines)
+                else:
+                    header_size = len(header_lines)
+                    available_lines = max_lines_per_image - header_size
+                    
+                    if available_lines > 0:
+                        first_part = header_lines.copy()
+                        first_part.extend(order_lines[:available_lines])
+                        image_parts.append(first_part)
+                        remaining_lines = order_lines[available_lines:]
+                    else:
+                        image_parts.append(header_lines)
+                        remaining_lines = order_lines
+                    
+                    while remaining_lines:
+                        part = remaining_lines[:max_lines_per_image]
+                        part_with_header = [f"ОТЧЕТ ПО СЕССИИ: {session['session_name']} (продолжение)", ""] + part
+                        image_parts.append(part_with_header)
+                        remaining_lines = remaining_lines[max_lines_per_image:]
+                
+                # Генерируем шрифт
+                try:
+                    font = ImageFont.truetype("arial.ttf", 14)
+                except:
+                    try:
+                        font = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", 14)
+                    except:
+                        font = ImageFont.load_default()
+                
+                # Создаем и отправляем изображения
+                images_to_send = []
+                for part_idx, part_lines in enumerate(image_parts):
+                    img_height = len(part_lines) * line_height + padding * 2
+                    img = Image.new('RGB', (img_width, img_height), color='white')
+                    draw = ImageDraw.Draw(img)
+                    
+                    y = padding
+                    for line in part_lines:
+                        if len(line) > 80:
+                            line = line[:77] + "..."
+                        draw.text((padding, y), line, fill='black', font=font)
+                        y += line_height
+                    
+                    img_bytes = io.BytesIO()
+                    img.save(img_bytes, format='PNG')
+                    img_bytes.seek(0)
+                    images_to_send.append(img_bytes)
+                
+                # Отправляем все изображения
+                total_parts = len(images_to_send)
+                for idx, img_bytes in enumerate(images_to_send):
+                    caption = f"📊 Отчет по сессии: {session['session_name']}\nЧасть {idx + 1} из {total_parts}"
+                    await query.message.reply_photo(
+                        photo=img_bytes,
+                        caption=caption
+                    )
+                    if idx < total_parts - 1:
+                        await asyncio.sleep(0.5)
+                
+                await query.edit_message_text(f"✅ Отчет успешно сформирован! Отправлено {total_parts} изображений.")
+            except Exception as e:
+                logger.error(f"Ошибка при генерации изображения: {e}")
+                try:
+                    await query.edit_message_text(
+                        f"📊 Отчет по сессии: {session['session_name']}\n\n{report_text[:4000]}"
+                    )
+                except BadRequest as e:
+                    if "Message is not modified" not in str(e):
+                        raise
+        else:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
+    
+    elif callback_data.startswith("manager_select_session_channel_report_"):
+        # Генерация Excel отчета и скриншота для канала менеджера
+        session_id = int(callback_data.split("_")[-1])
+        session = database.get_session(session_id)
+        if session:
+            await query.edit_message_text("⏳ Формирование Excel отчета и скриншота для канала...")
+            
+            try:
+                import reports
+                from datetime import datetime as dt_now
+                
+                # Генерируем Excel отчет
+                excel_file = reports.generate_channel_report_excel(session_id)
+                
+                await query.message.reply_document(
+                    document=excel_file,
+                    filename=f"Отчет_для_канала_{session['session_name']}_{dt_now.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    caption=f"📺 Excel отчет для канала: {session['session_name']}"
+                )
+                
+                # Генерируем скриншот
+                try:
+                    screenshot = await reports.generate_channel_report_screenshot(session_id)
+                    await query.message.reply_photo(
+                        photo=screenshot,
+                        caption=f"📸 Скриншот таблицы для канала: {session['session_name']}"
+                    )
+                    await query.edit_message_text(f"✅ Excel отчет и скриншот для канала успешно сформированы!")
+                except Exception as screenshot_error:
+                    logger.error(f"Ошибка при создании скриншота: {screenshot_error}")
+                    await query.edit_message_text(
+                        f"✅ Excel отчет сформирован!\n"
+                        f"⚠️ Не удалось создать скриншот: {str(screenshot_error)}\n"
+                        f"Установите Playwright: playwright install chromium"
+                    )
+                
+            except Exception as e:
+                logger.error(f"Ошибка при формировании отчета для канала: {e}")
+                await query.edit_message_text(
+                    f"❌ Ошибка при формировании отчета: {str(e)}"
+                )
+        else:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
+    
+    elif callback_data.startswith("manager_select_session_full_data_report_"):
+        # Генерация полного Excel отчета и скриншота для менеджера
+        session_id = int(callback_data.split("_")[-1])
+        session = database.get_session(session_id)
+        if session:
+            await query.edit_message_text("⏳ Формирование полного отчета и скриншота...")
+            
+            try:
+                import reports
+                from datetime import datetime as dt_now
+                
+                # Генерируем Excel отчет
+                excel_file = reports.generate_full_data_report_excel(session_id)
+                
+                await query.message.reply_document(
+                    document=excel_file,
+                    filename=f"Полный_отчет_{session['session_name']}_{dt_now.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    caption=f"📋 Excel отчет (2 столбца): {session['session_name']}"
+                )
+                
+                # Генерируем скриншот
+                try:
+                    screenshot = await reports.generate_full_data_report_screenshot(session_id)
+                    await query.message.reply_photo(
+                        photo=screenshot,
+                        caption=f"📸 Скриншот таблицы: {session['session_name']}"
+                    )
+                    await query.edit_message_text(f"✅ Полный отчет и скриншот успешно сформированы!")
+                except Exception as screenshot_error:
+                    logger.error(f"Ошибка при создании скриншота: {screenshot_error}")
+                    await query.edit_message_text(
+                        f"✅ Excel отчет сформирован!\n"
+                        f"⚠️ Не удалось создать скриншот: {str(screenshot_error)}\n"
+                        f"Установите Playwright: playwright install chromium"
+                    )
+                
+            except Exception as e:
+                logger.error(f"Ошибка при формировании полного отчета: {e}")
+                await query.edit_message_text(
+                    f"❌ Ошибка при формировании отчета: {str(e)}"
+                )
+        else:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
+    
+    elif callback_data == "manager_report":
+        # Выбор сессии для отчета (старый обработчик, оставляем для совместимости)
+        from keyboards.sessions_admin import get_sessions_keyboard_for_admin
+        sessions_keyboard = get_sessions_keyboard_for_admin("manager_report", back_callback="manager_back")
         try:
             await query.edit_message_text(
                 "📊 Отчет\n\n"
@@ -1371,7 +2077,6 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             )
         except BadRequest as e:
             if "Message is not modified" in str(e):
-                # Игнорируем ошибку если сообщение не изменилось
                 pass
             else:
                 raise
@@ -1535,5 +2240,93 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 except BadRequest as e:
                     if "Message is not modified" not in str(e):
                         raise
+        else:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
+    
+    elif callback_data.startswith("admin_select_session_channel_report_"):
+        # Генерация Excel отчета и скриншота для канала с маскировкой данных
+        session_id = int(callback_data.split("_")[-1])
+        session = database.get_session(session_id)
+        if session:
+            await query.edit_message_text("⏳ Формирование Excel отчета и скриншота для канала...")
+            
+            try:
+                import reports
+                from datetime import datetime
+                
+                # Генерируем Excel отчет
+                excel_file = reports.generate_channel_report_excel(session_id)
+                
+                await query.message.reply_document(
+                    document=excel_file,
+                    filename=f"Отчет_для_канала_{session['session_name']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    caption=f"📺 Excel отчет для канала: {session['session_name']}"
+                )
+                
+                # Генерируем скриншот
+                try:
+                    screenshot = await reports.generate_channel_report_screenshot(session_id)
+                    await query.message.reply_photo(
+                        photo=screenshot,
+                        caption=f"📸 Скриншот таблицы для канала: {session['session_name']}"
+                    )
+                    await query.edit_message_text(f"✅ Excel отчет и скриншот для канала успешно сформированы!")
+                except Exception as screenshot_error:
+                    logger.error(f"Ошибка при создании скриншота: {screenshot_error}")
+                    await query.edit_message_text(
+                        f"✅ Excel отчет сформирован!\n"
+                        f"⚠️ Не удалось создать скриншот: {str(screenshot_error)}\n"
+                        f"Установите Playwright: playwright install chromium"
+                    )
+                
+            except Exception as e:
+                logger.error(f"Ошибка при формировании отчета для канала: {e}")
+                await query.edit_message_text(
+                    f"❌ Ошибка при формировании отчета: {str(e)}"
+                )
+        else:
+            await query.answer("❌ Сессия не найдена!", show_alert=True)
+    
+    elif callback_data.startswith("admin_select_session_full_data_report_"):
+        # Генерация полного Excel отчета и скриншота с полными данными (без маскировки)
+        session_id = int(callback_data.split("_")[-1])
+        session = database.get_session(session_id)
+        if session:
+            await query.edit_message_text("⏳ Формирование полного отчета и скриншота...")
+            
+            try:
+                import reports
+                from datetime import datetime
+                
+                # Генерируем Excel отчет
+                excel_file = reports.generate_full_data_report_excel(session_id)
+                
+                await query.message.reply_document(
+                    document=excel_file,
+                    filename=f"Полный_отчет_{session['session_name']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    caption=f"📋 Excel отчет (2 столбца): {session['session_name']}"
+                )
+                
+                # Генерируем скриншот
+                try:
+                    screenshot = await reports.generate_full_data_report_screenshot(session_id)
+                    await query.message.reply_photo(
+                        photo=screenshot,
+                        caption=f"📸 Скриншот таблицы: {session['session_name']}"
+                    )
+                    await query.edit_message_text(f"✅ Полный отчет и скриншот успешно сформированы!")
+                except Exception as screenshot_error:
+                    logger.error(f"Ошибка при создании скриншота: {screenshot_error}")
+                    await query.edit_message_text(
+                        f"✅ Excel отчет сформирован!\n"
+                        f"⚠️ Не удалось создать скриншот: {str(screenshot_error)}\n"
+                        f"Установите Playwright: playwright install chromium"
+                    )
+                
+            except Exception as e:
+                logger.error(f"Ошибка при формировании полного отчета: {e}")
+                await query.edit_message_text(
+                    f"❌ Ошибка при формировании отчета: {str(e)}"
+                )
         else:
             await query.answer("❌ Сессия не найдена!", show_alert=True)

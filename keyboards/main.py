@@ -2,10 +2,11 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 
 def get_main_keyboard() -> InlineKeyboardMarkup:
-    """Создает главную клавиатуру с кнопками Купить и Личный кабинет"""
+    """Создает главную клавиатуру с кнопками Купить, Личный кабинет и Заказы"""
     keyboard = [
         [InlineKeyboardButton("🛒 Купить", callback_data="main_buy")],
-        [InlineKeyboardButton("👤 Личный кабинет", callback_data="main_cabinet")]
+        [InlineKeyboardButton("👤 Личный кабинет", callback_data="main_cabinet")],
+        [InlineKeyboardButton("📋 Заказы", callback_data="main_orders")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
