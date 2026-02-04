@@ -4,7 +4,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 def get_manager_keyboard() -> InlineKeyboardMarkup:
     """Создает клавиатуру панели менеджера"""
     keyboard = [
-        [InlineKeyboardButton("🔍 Найти", callback_data="manager_find_order")],
+        [InlineKeyboardButton("✅ Выдать заказ", callback_data="manager_find_order")],
         [InlineKeyboardButton("📦 Выдача оптом", callback_data="manager_bulk_complete")],
         [InlineKeyboardButton("📢 Оповещение не выданных", callback_data="manager_notify_pending")],
         [InlineKeyboardButton("📢 Оповещение активных", callback_data="manager_notify_active")],
@@ -16,8 +16,7 @@ def get_manager_keyboard() -> InlineKeyboardMarkup:
 def get_order_actions_keyboard(order_id: int) -> InlineKeyboardMarkup:
     """Создает клавиатуру действий с заказом"""
     keyboard = [
-        [InlineKeyboardButton("✏️ Изменить", callback_data=f"manager_edit_order_{order_id}")],
-        [InlineKeyboardButton("❌ Отклонить", callback_data=f"manager_decline_order_{order_id}")],
+        [InlineKeyboardButton("✅ Выдать", callback_data=f"manager_status_completed_{order_id}")],
         [InlineKeyboardButton("🔙 Назад", callback_data="manager_back")]
     ]
     return InlineKeyboardMarkup(keyboard)

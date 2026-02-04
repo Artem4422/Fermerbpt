@@ -622,9 +622,9 @@ def generate_channel_report_excel(session_id: int) -> io.BytesIO:
     ws = wb.active
     ws.title = "Отчет для канала"
     
-    # Стили
+    # Стили (уменьшены для печати)
     header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_font = Font(bold=True, color="FFFFFF", size=10)
     border = Border(
         left=Side(style='thin'),
         right=Side(style='thin'),
@@ -633,8 +633,13 @@ def generate_channel_report_excel(session_id: int) -> io.BytesIO:
     )
     center_align = Alignment(horizontal='center', vertical='center')
     
+    # Стили для телефонов и ФИО (увеличенный шрифт и жирный, но уменьшен для печати)
+    phone_fio_font = Font(bold=True, size=11)
+    # Обычный шрифт для остальных ячеек
+    normal_font = Font(size=9)
+    
     # Заголовки для первого столбца (колонки A-F)
-    headers_left = ["н", "тел", "фио", "тов", "я", "сум"]
+    headers_left = ["№", "тел", "фио", "тов", "я", "сум"]
     for col, header in enumerate(headers_left, 1):
         cell = ws.cell(row=1, column=col)
         cell.value = header
@@ -644,7 +649,7 @@ def generate_channel_report_excel(session_id: int) -> io.BytesIO:
         cell.border = border
     
     # Заголовки для второго столбца (колонки H-M)
-    headers_right = ["н", "тел", "фио", "тов", "я", "сум"]
+    headers_right = ["№", "тел", "фио", "тов", "я", "сум"]
     for col, header in enumerate(headers_right, 1):
         cell = ws.cell(row=1, column=col + 7)  # +7 чтобы начать с колонки H (8-я колонка)
         cell.value = header
@@ -666,6 +671,8 @@ def generate_channel_report_excel(session_id: int) -> io.BytesIO:
     for order in orders_left:
         # Маскируем данные
         masked_name = qr_code.mask_name_channel(order['full_name'])
+        # Обрезаем ФИО до 8 символов
+        masked_name = masked_name[:8] if len(masked_name) > 8 else masked_name
         masked_phone = qr_code.mask_phone_channel(order['phone_number'])
         
         # Получаем товары заказа
@@ -674,25 +681,32 @@ def generate_channel_report_excel(session_id: int) -> io.BytesIO:
             # Берем первый товар (или объединяем если несколько)
             product_names = [item['product_name'] for item in order_items]
             product_name = ", ".join(set(product_names))  # Убираем дубликаты
-            # Обрезаем до 9 символов
-            product_name = product_name[:9] if len(product_name) > 9 else product_name
+            # Обрезаем до 3 символов
+            product_name = product_name[:3] if len(product_name) > 3 else product_name
             total_quantity = sum(item['quantity'] for item in order_items)
         else:
-            product_name = "Нет товаров"
+            product_name = ""
             total_quantity = 0
         
         # Заполняем данные
         ws.cell(row=row, column=1).value = row_number  # Номер строки
-        ws.cell(row=row, column=2).value = order['order_number']
-        ws.cell(row=row, column=3).value = masked_phone
-        ws.cell(row=row, column=4).value = masked_name
-        ws.cell(row=row, column=5).value = product_name
-        ws.cell(row=row, column=6).value = total_quantity
-        ws.cell(row=row, column=7).value = int(order['total_amount'])
-        ws.cell(row=row, column=7).number_format = '#,##0'
+        ws.cell(row=row, column=1).font = normal_font
+        ws.cell(row=row, column=2).value = masked_phone
+        ws.cell(row=row, column=2).font = phone_fio_font  # Увеличенный жирный шрифт для телефона
+        ws.cell(row=row, column=3).value = masked_name
+        ws.cell(row=row, column=3).font = phone_fio_font  # Увеличенный жирный шрифт для ФИО
+        ws.cell(row=row, column=4).value = product_name
+        ws.cell(row=row, column=4).font = normal_font
+        ws.cell(row=row, column=5).value = total_quantity
+        ws.cell(row=row, column=5).font = normal_font
+        # Форматируем сумму с пробелом как разделителем тысяч
+        amount_value = int(order['total_amount'])
+        ws.cell(row=row, column=6).value = amount_value
+        ws.cell(row=row, column=6).number_format = '# ##0'  # Формат с пробелом как разделителем тысяч
+        ws.cell(row=row, column=6).font = normal_font
         
         # Применяем границы
-        for col in range(1, 8):
+        for col in range(1, 7):
             ws.cell(row=row, column=col).border = border
         
         row += 1
@@ -705,6 +719,8 @@ def generate_channel_report_excel(session_id: int) -> io.BytesIO:
     for order in orders_right:
         # Маскируем данные
         masked_name = qr_code.mask_name_channel(order['full_name'])
+        # Обрезаем ФИО до 8 символов
+        masked_name = masked_name[:8] if len(masked_name) > 8 else masked_name
         masked_phone = qr_code.mask_phone_channel(order['phone_number'])
         
         # Получаем товары заказа
@@ -713,51 +729,81 @@ def generate_channel_report_excel(session_id: int) -> io.BytesIO:
             # Берем первый товар (или объединяем если несколько)
             product_names = [item['product_name'] for item in order_items]
             product_name = ", ".join(set(product_names))  # Убираем дубликаты
-            # Обрезаем до 9 символов
-            product_name = product_name[:9] if len(product_name) > 9 else product_name
+            # Обрезаем до 3 символов
+            product_name = product_name[:3] if len(product_name) > 3 else product_name
             total_quantity = sum(item['quantity'] for item in order_items)
         else:
-            product_name = "Нет товаров"
+            product_name = ""
             total_quantity = 0
         
-        # Заполняем данные (начинаем с колонки I, т.е. колонка 9)
-        ws.cell(row=row, column=9).value = row_number  # Номер строки
-        ws.cell(row=row, column=10).value = order['order_number']
-        ws.cell(row=row, column=11).value = masked_phone
-        ws.cell(row=row, column=12).value = masked_name
-        ws.cell(row=row, column=13).value = product_name
-        ws.cell(row=row, column=14).value = total_quantity
-        ws.cell(row=row, column=15).value = int(order['total_amount'])
-        ws.cell(row=row, column=15).number_format = '#,##0'
+        # Заполняем данные (начинаем с колонки H, т.е. колонка 8)
+        ws.cell(row=row, column=8).value = row_number  # Номер строки
+        ws.cell(row=row, column=8).font = normal_font
+        ws.cell(row=row, column=9).value = masked_phone
+        ws.cell(row=row, column=9).font = phone_fio_font  # Увеличенный жирный шрифт для телефона
+        ws.cell(row=row, column=10).value = masked_name
+        ws.cell(row=row, column=10).font = phone_fio_font  # Увеличенный жирный шрифт для ФИО
+        ws.cell(row=row, column=11).value = product_name
+        ws.cell(row=row, column=11).font = normal_font
+        ws.cell(row=row, column=12).value = total_quantity
+        ws.cell(row=row, column=12).font = normal_font
+        # Форматируем сумму с пробелом как разделителем тысяч
+        amount_value = int(order['total_amount'])
+        ws.cell(row=row, column=13).value = amount_value
+        ws.cell(row=row, column=13).number_format = '# ##0'  # Формат с пробелом как разделителем тысяч
+        ws.cell(row=row, column=13).font = normal_font
         
         # Применяем границы
-        for col in range(9, 16):
+        for col in range(8, 14):
             ws.cell(row=row, column=col).border = border
         
         row += 1
         row_number += 1
     
-    # Настраиваем ширину колонок
+    # Настраиваем ширину колонок (максимально сжато)
     column_widths = {
-        'A': 5,   # № (номер строки)
-        'B': 12,  # Н-номер заказ
-        'C': 15,  # тел-телефон
-        'D': 20,  # фио
-        'E': 9,   # товар (9 символов)
-        'F': 12,  # я-количество
-        'G': 15,  # сум-сумма заказа
-        'H': 2,   # Пустая колонка между столбцами
-        'I': 5,   # № (номер строки)
-        'J': 12,  # Н-номер заказ
-        'K': 15,  # тел-телефон
-        'L': 20,  # фио
-        'M': 9,   # товар (9 символов)
-        'N': 12,  # я-количество
-        'O': 15,  # сум-сумма заказа
+        'A': 3.29,   # № (номер строки)
+        'B': 7.29,  # тел-телефон
+        'C': 9,   # фио - минимальная ширина для 8 символов
+        'D': 4,   # товар - минимальная ширина для 3 символов
+        'E': 2,   # я-количество - минимальная ширина
+        'F': 4.71,  # сум-сумма заказа
+        'G': 2,   # Пустая колонка между столбцами
+        'H': 3.29,   # № (номер строки)
+        'I': 7.29,  # тел-телефон
+        'J': 9,   # фио - минимальная ширина для 8 символов
+        'K': 4,   # товар - минимальная ширина для 3 символов
+        'L': 2,   # я-количество - минимальная ширина
+        'M': 4.71,  # сум-сумма заказа
     }
     
     for col_letter, width in column_widths.items():
         ws.column_dimensions[col_letter].width = width
+    
+    # Определяем количество строк с данными
+    max_row_left = len(orders_left) + 1 if orders_left else 1  # +1 для заголовка
+    max_row_right = len(orders_right) + 1 if orders_right else 1  # +1 для заголовка
+    max_row = max(max_row_left, max_row_right)
+    
+    # Устанавливаем область печати как один непрерывный диапазон от A до M
+    # Это включает обе таблицы (левая A-F, правая H-M) и пустую колонку G между ними
+    print_area = f'A1:M{max_row}'
+    ws.print_area = print_area
+    
+    # Настройки страницы для печати на A4 (альбомная ориентация для двух столбцов)
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE  # Альбомная ориентация для двух столбцов
+    ws.page_setup.fitToWidth = 1  # Подогнать по ширине на 1 страницу
+    ws.page_setup.fitToHeight = 1  # Подогнать по высоте на 1 страницу
+    # Не устанавливаем scale, чтобы Excel автоматически масштабировал для fitToWidth/fitToHeight
+    
+    # Настройка полей (минимальные для максимального использования пространства)
+    ws.page_margins.left = 0.2
+    ws.page_margins.right = 0.2
+    ws.page_margins.top = 0.3
+    ws.page_margins.bottom = 0.3
+    ws.page_margins.header = 0.2
+    ws.page_margins.footer = 0.2
     
     # Сохраняем в байты
     excel_bytes = io.BytesIO()
@@ -781,9 +827,9 @@ def generate_full_data_report_excel(session_id: int) -> io.BytesIO:
     ws = wb.active
     ws.title = "Отчет с полными данными"
     
-    # Стили
+    # Стили (уменьшены для печати, как в отчете для канала)
     header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_font = Font(bold=True, color="FFFFFF", size=10)
     border = Border(
         left=Side(style='thin'),
         right=Side(style='thin'),
@@ -792,8 +838,13 @@ def generate_full_data_report_excel(session_id: int) -> io.BytesIO:
     )
     center_align = Alignment(horizontal='center', vertical='center')
     
-    # Заголовки для первого столбца (колонки A-G)
-    headers_left = ["№", "осн", "тел", "фио", "тов", "я", "сум"]
+    # Стили для телефонов и ФИО (увеличенный шрифт и жирный, но уменьшен для печати)
+    phone_fio_font = Font(bold=True, size=11)
+    # Обычный шрифт для остальных ячеек
+    normal_font = Font(size=9)
+    
+    # Заголовки для первого столбца (колонки A-F, убрали "осн")
+    headers_left = ["№", "тел", "фио", "тов", "я", "сум"]
     for col, header in enumerate(headers_left, 1):
         cell = ws.cell(row=1, column=col)
         cell.value = header
@@ -802,10 +853,10 @@ def generate_full_data_report_excel(session_id: int) -> io.BytesIO:
         cell.alignment = center_align
         cell.border = border
     
-    # Заголовки для второго столбца (колонки I-O)
-    headers_right = ["№", "осн", "тел", "фио", "тов", "я", "сум"]
+    # Заголовки для второго столбца (колонки H-M, убрали "осн")
+    headers_right = ["№", "тел", "фио", "тов", "я", "сум"]
     for col, header in enumerate(headers_right, 1):
-        cell = ws.cell(row=1, column=col + 8)  # +8 чтобы начать с колонки I (9-я колонка)
+        cell = ws.cell(row=1, column=col + 7)  # +7 чтобы начать с колонки H (8-я колонка)
         cell.value = header
         cell.font = header_font
         cell.fill = header_fill
@@ -825,6 +876,8 @@ def generate_full_data_report_excel(session_id: int) -> io.BytesIO:
     for order in orders_left:
         # Используем полные данные без маскировки
         full_name = order['full_name'] or ""
+        # Обрезаем ФИО до 8 символов
+        full_name = full_name[:8] if len(full_name) > 8 else full_name
         full_phone = order['phone_number'] or ""
         
         # Получаем товары заказа
@@ -833,27 +886,32 @@ def generate_full_data_report_excel(session_id: int) -> io.BytesIO:
             # Берем первый товар (или объединяем если несколько)
             product_names = [item['product_name'] for item in order_items]
             product_name = ", ".join(set(product_names))  # Убираем дубликаты
-            # Обрезаем до 9 символов
-            product_name = product_name[:9] if len(product_name) > 9 else product_name
+            # Обрезаем до 3 символов
+            product_name = product_name[:3] if len(product_name) > 3 else product_name
             total_quantity = sum(item['quantity'] for item in order_items)
         else:
-            product_name = "Нет товаров"
+            product_name = ""
             total_quantity = 0
         
-        # Заполняем данные
-        # Используем номер по сессии, если есть, иначе порядковый номер строки
-        session_num = order.get('session_order_number') or row_number
-        ws.cell(row=row, column=1).value = session_num  # Номер по сессии (или порядковый номер)
-        ws.cell(row=row, column=2).value = order['order_number']  # Основной номер
-        ws.cell(row=row, column=3).value = full_phone
-        ws.cell(row=row, column=4).value = full_name
-        ws.cell(row=row, column=5).value = product_name
-        ws.cell(row=row, column=6).value = total_quantity
-        ws.cell(row=row, column=7).value = int(order['total_amount'])
-        ws.cell(row=row, column=7).number_format = '#,##0'
+        # Заполняем данные (убрали колонку "осн")
+        ws.cell(row=row, column=1).value = row_number  # Номер строки
+        ws.cell(row=row, column=1).font = normal_font
+        ws.cell(row=row, column=2).value = full_phone
+        ws.cell(row=row, column=2).font = phone_fio_font  # Увеличенный жирный шрифт для телефона
+        ws.cell(row=row, column=3).value = full_name
+        ws.cell(row=row, column=3).font = phone_fio_font  # Увеличенный жирный шрифт для ФИО
+        ws.cell(row=row, column=4).value = product_name
+        ws.cell(row=row, column=4).font = normal_font
+        ws.cell(row=row, column=5).value = total_quantity
+        ws.cell(row=row, column=5).font = normal_font
+        # Форматируем сумму с пробелом как разделителем тысяч
+        amount_value = int(order['total_amount'])
+        ws.cell(row=row, column=6).value = amount_value
+        ws.cell(row=row, column=6).number_format = '# ##0'  # Формат с пробелом как разделителем тысяч
+        ws.cell(row=row, column=6).font = normal_font
         
         # Применяем границы
-        for col in range(1, 8):
+        for col in range(1, 7):
             ws.cell(row=row, column=col).border = border
         
         row += 1
@@ -866,6 +924,8 @@ def generate_full_data_report_excel(session_id: int) -> io.BytesIO:
     for order in orders_right:
         # Используем полные данные без маскировки
         full_name = order['full_name'] or ""
+        # Обрезаем ФИО до 8 символов
+        full_name = full_name[:8] if len(full_name) > 8 else full_name
         full_phone = order['phone_number'] or ""
         
         # Получаем товары заказа
@@ -874,57 +934,80 @@ def generate_full_data_report_excel(session_id: int) -> io.BytesIO:
             # Берем первый товар (или объединяем если несколько)
             product_names = [item['product_name'] for item in order_items]
             product_name = ", ".join(set(product_names))  # Убираем дубликаты
-            # Обрезаем до 9 символов
-            product_name = product_name[:9] if len(product_name) > 9 else product_name
+            # Обрезаем до 3 символов
+            product_name = product_name[:3] if len(product_name) > 3 else product_name
             total_quantity = sum(item['quantity'] for item in order_items)
         else:
-            product_name = "Нет товаров"
+            product_name = ""
             total_quantity = 0
         
-        # Заполняем данные (начинаем с колонки I, т.е. колонка 9)
-        # Используем номер по сессии, если есть, иначе порядковый номер строки
-        session_num = order.get('session_order_number') or row_number
-        ws.cell(row=row, column=9).value = session_num  # Номер по сессии (или порядковый номер)
-        ws.cell(row=row, column=10).value = order['order_number']  # Основной номер
-        ws.cell(row=row, column=11).value = full_phone
-        ws.cell(row=row, column=12).value = full_name
-        ws.cell(row=row, column=13).value = product_name
-        ws.cell(row=row, column=14).value = total_quantity
-        ws.cell(row=row, column=15).value = int(order['total_amount'])
-        ws.cell(row=row, column=15).number_format = '#,##0'
+        # Заполняем данные (начинаем с колонки H, т.е. колонка 8, убрали колонку "осн")
+        ws.cell(row=row, column=8).value = row_number  # Номер строки
+        ws.cell(row=row, column=8).font = normal_font
+        ws.cell(row=row, column=9).value = full_phone
+        ws.cell(row=row, column=9).font = phone_fio_font  # Увеличенный жирный шрифт для телефона
+        ws.cell(row=row, column=10).value = full_name
+        ws.cell(row=row, column=10).font = phone_fio_font  # Увеличенный жирный шрифт для ФИО
+        ws.cell(row=row, column=11).value = product_name
+        ws.cell(row=row, column=11).font = normal_font
+        ws.cell(row=row, column=12).value = total_quantity
+        ws.cell(row=row, column=12).font = normal_font
+        # Форматируем сумму с пробелом как разделителем тысяч
+        amount_value = int(order['total_amount'])
+        ws.cell(row=row, column=13).value = amount_value
+        ws.cell(row=row, column=13).number_format = '# ##0'  # Формат с пробелом как разделителем тысяч
+        ws.cell(row=row, column=13).font = normal_font
         
         # Применяем границы
-        for col in range(9, 16):
+        for col in range(8, 14):
             ws.cell(row=row, column=col).border = border
         
         row += 1
         row_number += 1
     
-    # Настраиваем ширину колонок
+    # Настраиваем ширину колонок (максимально сжато, как в отчете для канала)
     column_widths = {
-        'A': 5,   # № (номер строки)
-        'B': 12,  # Н-номер заказ
-        'C': 18,  # тел-телефон (полный номер)
-        'D': 25,  # фио (полное ФИО)
-        'E': 9,   # товар (9 символов)
-        'F': 12,  # я-количество
-        'G': 15,  # сум-сумма заказа
-        'H': 2,   # Пустая колонка между столбцами
-        'I': 5,   # № (номер строки)
-        'J': 12,  # Н-номер заказ
-        'K': 18,  # тел-телефон (полный номер)
-        'L': 25,  # фио (полное ФИО)
-        'M': 9,   # товар (9 символов)
-        'N': 12,  # я-количество
-        'O': 15,  # сум-сумма заказа
+        'A': 3.29,   # № (номер строки)
+        'B': 7.29,  # тел-телефон
+        'C': 9,   # фио - минимальная ширина для 8 символов
+        'D': 4,   # товар - минимальная ширина для 3 символов
+        'E': 2,   # я-количество - минимальная ширина
+        'F': 4.71,  # сум-сумма заказа
+        'G': 2,   # Пустая колонка между столбцами
+        'H': 3.29,   # № (номер строки)
+        'I': 7.29,  # тел-телефон
+        'J': 9,   # фио - минимальная ширина для 8 символов
+        'K': 4,   # товар - минимальная ширина для 3 символов
+        'L': 2,   # я-количество - минимальная ширина
+        'M': 4.71,  # сум-сумма заказа
     }
     
     for col_letter, width in column_widths.items():
         ws.column_dimensions[col_letter].width = width
     
-    # Устанавливаем вертикальную ориентацию страницы (портретная) для формата A4
-    ws.page_setup.orientation = 'portrait'
-    ws.page_setup.paperSize = 9  # A4 paper size
+    # Определяем количество строк с данными
+    max_row_left = len(orders_left) + 1 if orders_left else 1  # +1 для заголовка
+    max_row_right = len(orders_right) + 1 if orders_right else 1  # +1 для заголовка
+    max_row = max(max_row_left, max_row_right)
+    
+    # Устанавливаем область печати как один непрерывный диапазон от A до M
+    # Это включает обе таблицы (левая A-F, правая H-M) и пустую колонку G между ними
+    print_area = f'A1:M{max_row}'
+    ws.print_area = print_area
+    
+    # Настройки страницы для печати на A4 (альбомная ориентация для двух столбцов)
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE  # Альбомная ориентация для двух столбцов
+    ws.page_setup.fitToWidth = 1  # Подогнать по ширине на 1 страницу
+    ws.page_setup.fitToHeight = 1  # Подогнать по высоте на 1 страницу
+    
+    # Настройка полей (минимальные для максимального использования пространства)
+    ws.page_margins.left = 0.2
+    ws.page_margins.right = 0.2
+    ws.page_margins.top = 0.3
+    ws.page_margins.bottom = 0.3
+    ws.page_margins.header = 0.2
+    ws.page_margins.footer = 0.2
     
     # Сохраняем в байты
     excel_bytes = io.BytesIO()
@@ -1124,6 +1207,8 @@ def generate_channel_report_html(session_id: int) -> str:
     masked_orders = []
     for order in orders:
         masked_name = qr_code.mask_name_channel(order['full_name'])
+        # Обрезаем ФИО до 8 символов
+        masked_name = masked_name[:8] if len(masked_name) > 8 else masked_name
         masked_phone = qr_code.mask_phone_channel(order['phone_number'])
         
         # Получаем товары заказа
@@ -1131,11 +1216,11 @@ def generate_channel_report_html(session_id: int) -> str:
         if order_items:
             product_names = [item['product_name'] for item in order_items]
             product_name = ", ".join(set(product_names))
-            # Обрезаем до 9 символов
-            product_name = product_name[:9] if len(product_name) > 9 else product_name
+            # Обрезаем до 3 символов
+            product_name = product_name[:3] if len(product_name) > 3 else product_name
             total_quantity = sum(item['quantity'] for item in order_items)
         else:
-            product_name = "Нет товаров"
+            product_name = ""
             total_quantity = 0
         
         masked_orders.append({
@@ -1179,28 +1264,34 @@ def generate_channel_report_html(session_id: int) -> str:
         table {{
             width: 100%;
             border-collapse: collapse;
-            font-size: 12px;
+            font-size: 16px;
         }}
         th {{
             background-color: #366092;
             color: white;
-            padding: 8px;
+            padding: 10px;
             text-align: center;
             font-weight: bold;
+            font-size: 18px;
             border: 1px solid #ddd;
         }}
         td {{
-            padding: 6px;
+            padding: 8px;
             text-align: center;
             border: 1px solid #ddd;
+            font-size: 16px;
         }}
         tr:nth-child(even) {{
             background-color: #f9f9f9;
         }}
+        .phone, .fio {{
+            font-size: 20px;
+            font-weight: bold;
+        }}
         .header {{
             text-align: center;
             margin-bottom: 20px;
-            font-size: 18px;
+            font-size: 24px;
             font-weight: bold;
         }}
     </style>
@@ -1213,7 +1304,6 @@ def generate_channel_report_html(session_id: int) -> str:
                 <thead>
                     <tr>
                         <th>№</th>
-                        <th>н</th>
                         <th>тел</th>
                         <th>фио</th>
                         <th>тов</th>
@@ -1229,9 +1319,8 @@ def generate_channel_report_html(session_id: int) -> str:
     for order in orders_left:
         html += f"""                    <tr>
                         <td>{row_number}</td>
-                        <td>{order['order_number']}</td>
-                        <td>{order['phone']}</td>
-                        <td>{order['name']}</td>
+                        <td class="phone">{order['phone']}</td>
+                        <td class="fio">{order['name']}</td>
                         <td>{order['product']}</td>
                         <td>{order['quantity']}</td>
                         <td>{order['amount']}</td>
@@ -1247,7 +1336,6 @@ def generate_channel_report_html(session_id: int) -> str:
                 <thead>
                     <tr>
                         <th>№</th>
-                        <th>н</th>
                         <th>тел</th>
                         <th>фио</th>
                         <th>тов</th>
@@ -1263,9 +1351,8 @@ def generate_channel_report_html(session_id: int) -> str:
     for order in orders_right:
         html += f"""                    <tr>
                         <td>{row_number}</td>
-                        <td>{order['order_number']}</td>
-                        <td>{order['phone']}</td>
-                        <td>{order['name']}</td>
+                        <td class="phone">{order['phone']}</td>
+                        <td class="fio">{order['name']}</td>
                         <td>{order['product']}</td>
                         <td>{order['quantity']}</td>
                         <td>{order['amount']}</td>
